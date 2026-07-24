@@ -55,23 +55,27 @@ templates_source_desc() {
 }
 
 # templates_resolve — resolve the three knobs to a LOCAL directory holding
-# the registry, printed on stdout. RIG_TEMPLATES_DIR wins and is used as-is;
-# otherwise the repo@ref tarball is fetched and extracted under a temp dir,
-# recorded in TEMPLATES_TMP for the caller to rm. Candidate URLs follow
-# install.sh's precedence — a tag outranks a branch that shares its name —
-# plus the bare archive/<ref> form, which is how a commit-SHA pin (the
-# default) downloads. Failure lists every URL tried: the fetch is
-# unauthenticated by contract (box auto-runs bootstrap at mint, holding
-# nothing), so "is the repo public and the ref real" is the whole diagnosis.
+# the registry, left in the REGISTRY_DIR global (a global, not stdout: a
+# $(…) call site would run the fetch in a subshell and lose TEMPLATES_TMP,
+# the path the caller's cleanup trap must rm). RIG_TEMPLATES_DIR wins and is
+# used as-is; otherwise the repo@ref tarball is fetched and extracted under
+# a temp dir, recorded in TEMPLATES_TMP. Candidate URLs follow install.sh's
+# precedence — a tag outranks a branch that shares its name — plus the bare
+# archive/<ref> form, which is how a commit-SHA pin (the default) downloads.
+# Failure lists every URL tried: the fetch is unauthenticated by contract
+# (box auto-runs bootstrap at mint, holding nothing), so "is the repo public
+# and the ref real" is the whole diagnosis.
 TEMPLATES_TMP=""
+# shellcheck disable=SC2034  # REGISTRY_DIR is this function's OUTPUT, read by the sourcing script
+REGISTRY_DIR=""
 templates_resolve() {
-  local repo ref url got="" d
+  local repo ref url got=""
   if [ -n "${RIG_TEMPLATES_DIR:-}" ]; then
     [ -d "$RIG_TEMPLATES_DIR" ] || {
       printf 'RIG_TEMPLATES_DIR is not a directory: %s\n' "$RIG_TEMPLATES_DIR" >&2
       return 1
     }
-    printf '%s\n' "$RIG_TEMPLATES_DIR"
+    REGISTRY_DIR="$RIG_TEMPLATES_DIR"
     return 0
   fi
   repo="${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}"
@@ -104,8 +108,8 @@ templates_resolve() {
     printf 'the registry tarball from %s does not hold exactly one top-level directory\n' "$got" >&2
     return 1
   }
-  d="${1%/}"
-  printf '%s\n' "$d"
+  # shellcheck disable=SC2034  # the function's output global, read by the sourcing script
+  REGISTRY_DIR="${1%/}"
 }
 
 # templates_roles <registry-dir> — the roles a registry defines: its
@@ -188,6 +192,49 @@ template_parse_env() {
   esac
   [ -n "$TPL_PATH_LINE" ] \
     || { printf 'template.env: PATH_LINE: must not be empty\n' >&2; return 1; }
+  # Every word must be a sane package name — the list is handed to apt-get
+  # unquoted by design, and this is what keeps an option ('-o …') or a path
+  # from riding in through the data file.
+  local pkg
+  for pkg in $TPL_APT_EXTRAS; do
+    [[ "$pkg" =~ ^[a-z0-9][a-z0-9.+-]*$ ]] \
+      || { printf 'template.env: APT_EXTRAS: not a sane package name: %s\n' "$pkg" >&2; return 1; }
+  done
+}
+
+# render_tenant_context <role> <creds.md> — the agent-context file's
+# content, on stdout: the one file every agent reads before touching
+# anything. The skeleton is MECHANISM and lives here once — the box#80 guard
+# note ("never run box setup-host or the drill inside a box; the box you are
+# in is not a host you own") must never be copy-pasted per template again —
+# and only the creds paragraph is per-vendor DATA, spliced in from the
+# definition's creds.md.
+render_tenant_context() {
+  local role="$1" creds_file="$2"
+  cat <<EOF
+# You are running inside a box (tenant: ${role})
+
+A box is a trust-less, network-isolated, ephemeral VM created by the
+\`box\` CLI. Keep this context in mind:
+
+$(cat "$creds_file")
+- **Isolated.** The box reaches the public internet but nothing on the host or
+  local network. There is no inbound path.
+- **Disposable.** Nothing here is backed up. State is discarded when the box is
+  removed; the operator persists work via git push and via \`box snapshot\`.
+- **Not a host you own.** Never run \`box setup-host\`, \`box teardown-host\`,
+  or the drill inside a box. The box you are in is not a host you own: a
+  nested box stack claims the guest's own uplink subnet and gateway, and
+  silently breaks this box's networking with intermittent egress blackouts
+  (heavy-duty/box#80). Working ON the box repo from in here is fine — editing
+  and testing never needs the host stack; host setup belongs to the operator's
+  machine, never this one.
+- **Bootstrap runbook.** If the repository you are working in contains a
+  \`.box/\` folder (older repos may use \`.claudebox/\`), read it as your setup
+  runbook — how to install dependencies, start services, template environment
+  files, seed data, and smoke-test — and follow it. It is documentation for
+  you, not a script the host runs.
+EOF
 }
 
 # template_lint <role-dir> — the whole-definition check the registry repo's

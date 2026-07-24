@@ -29,9 +29,11 @@ usage: rig bootstrap <control-plane-server|workload-server|runner-server|
                      (--users <path> | --no-users)
                      [--hostname <name>] [--root-door <closed|open>]
                      [--host <yes|no>] [--join <authkey|login>]
-       rig bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box> [--user <name>]
-                     (the box TENANT roles — see their own --help; they take
-                      no --users, see below)
+       rig bootstrap <role>-box [--user <name>]
+                     (the box TENANT roles — the agent tenants come from the
+                      heavy-duty/rig-templates registry, staging-box from
+                      rig's own tree; see their own --help — they take no
+                      --users, see below)
        rig bootstrap --undo
                      leave the tailnet only when the role marker proves rig
                      performed the join, then remove the role marker
@@ -59,7 +61,8 @@ and per-human accounts keep attribution intact for the times someone does go
 in. So the complete path is the default path and skipping it is a deliberate
 --no-users, not an omission.
 
---users does NOT reach the box TENANT roles (claude-box|codex-box|grok-box|kimi-box|staging-box). A
+--users does NOT reach the box TENANT roles (any '-box' name, e.g.
+claude-box, staging-box). A
 tenant is a box-minted GUEST: box auto-runs its bootstrap at mint,
 non-interactively, with no file to hand it; the guest never joins the tailnet
 and has no SSH door of its own — entry is `box shell`, gated by the HOST's
@@ -122,15 +125,18 @@ case "$ROLE" in
     [ $# -eq 0 ] || die "bootstrap --undo takes no arguments" 2
     exec "$HERE/bootstrap-undo.sh" ;;
   control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom) shift ;;
-  claude-box|codex-box|grok-box|kimi-box|staging-box)
+  *-box)
     # The box TENANT roles (#31) are a different family — guests a box mints,
     # never tailnet machines — and live in their own mechanism, one script
-    # parameterized per tenant. Dispatched here so `rig bootstrap <role>`
-    # stays the single entrypoint for both families.
+    # parameterized per DEFINITION fetched from the template registry (#110;
+    # staging-box stays in-tree). Dispatched on the FAMILY SUFFIX (#76), not
+    # an enumerated list: which '-box' roles exist is the registry's fact, so
+    # a template added there is mintable with zero code changes here.
+    # `rig bootstrap <role>` stays the single entrypoint for both families.
     exec "$HERE/bootstrap-tenant.sh" "$@" ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a tenant role: claude-box|codex-box|grok-box|kimi-box|staging-box)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a tenant role: claude-box|codex-box|grok-box|kimi-box|staging-box)" 2 ;;
+  "") usage >&2; die "role required (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a '-box' tenant role from the template registry, e.g. claude-box)" 2 ;;
+  *) die "unknown role: $ROLE (want control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a '-box' tenant role from the template registry, e.g. claude-box)" 2 ;;
 esac
 
 # Role→traits map — the single place a role's shape is declared (issue #26).
