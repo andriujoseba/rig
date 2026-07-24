@@ -159,6 +159,7 @@ check "…and the diff names the drifted sshd keyword, not just 'differs'" 1 "pa
 emit() {   # emit <outfile> — emit_record with the harness globals staged
   DRILL_VERSION="9.9.9" RUN_ID="drill-2026-01-01-a" \
   REF="release/9.9.9" BOXREF="release/0.4.0" RIG_SHA="5d6e7f8" BOX_SHA="1a2b3c4" \
+  TPLREPO="heavy-duty/rig-templates" TPLREF="9f8e7d6c5b4a39281706f5e4d3c2b1a098765432" TPL_SHA="9f8e7d6" \
   bash -c '
     . "$1"
     pass=12 fail=1 skipped=1
@@ -173,6 +174,7 @@ check "record: the version-and-date heading" 0 "# Release drill — 9.9.9 — " 
 check "record: the run ID that joins the family's records" 0 "Run ID: drill-2026-01-01-a" cat "$WORK/record.md"
 check "record: both pinned refs with their SHAs" 0 "rig@5d6e7f8 (RIG_REF=release/9.9.9)" cat "$WORK/record.md"
 check "record: …box's too" 0 "box@1a2b3c4 (BOX_REF=release/0.4.0)" cat "$WORK/record.md"
+check "record: the template registry SHA rides alongside the pair (#110)" 0 "rig-templates@9f8e7d6 (ref 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432)" cat "$WORK/record.md"
 check "record: one table row per leg, result verbatim" 0 "| re-converge (idempotence) | clean, no changes |" cat "$WORK/record.md"
 check "record: the numbers, skips counted apart from passes" 0 "12 passed, 1 failed, 1 skipped" cat "$WORK/record.md"
 check "record: a FAILED run still names what failed (evidence, not success)" 0 "FAIL: coolify container state: absent" cat "$WORK/record.md"
