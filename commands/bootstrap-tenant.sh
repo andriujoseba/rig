@@ -104,7 +104,13 @@ while [ $# -gt 0 ]; do
     -h|--help) usage; exit 0 ;;
     --user)
       [ $# -ge 2 ] || die "--user needs a value" 2
-      TENANT_USER_OVERRIDE="$2"; shift 2 ;;
+      TENANT_USER_OVERRIDE="$2"; shift 2
+      # Same charset the users file enforces, for the same reasons (a leading
+      # '-' reads as a usermod flag; '|', ':' corrupt things downstream).
+      # Checked HERE, at parse — the definition's USER is checked by the
+      # parser — so the refusal needs no registry and no network.
+      [[ "$TENANT_USER_OVERRIDE" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+        || die "invalid user: '$TENANT_USER_OVERRIDE' — must match ^[a-z_][a-z0-9_-]{0,31}\$" 2 ;;
     --hostname|--root-door|--host|--join)
       # The machine-role traits, refused with a story rather than "unknown
       # flag": a tenant is a guest, not a tailnet machine — its shape comes
@@ -118,36 +124,6 @@ while [ $# -gt 0 ]; do
     *) die "unknown flag: $1" 2 ;;
   esac
 done
-
-# --- the definition ----------------------------------------------------------
-# Resolved and parsed BEFORE the root check, so the two refusals a definition
-# can earn — unknown role (listing what the resolved source actually
-# contains) and malformed data (naming the failing key) — are testable
-# non-root, offline, via RIG_TEMPLATES_DIR fixtures. The parse is the mint's
-# own guard, deliberately duplicating the registry CI's lint: CI protects the
-# registry, this protects a mint served through RIG_TEMPLATES_REPO/_DIR that
-# CI never saw. template.env is parsed, NEVER sourced — a definition cannot
-# execute arbitrary shell through its data file; install.sh is the one
-# deliberately executable part, and it runs only after the root check below.
-trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
-TPL_DIR=""
-if [ "$ROLE" = "staging-box" ]; then
-  TENANT_USER="${TENANT_USER_OVERRIDE:-ops}"   # box#69's ops
-else
-  templates_resolve \
-    || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
-  TPL_DIR="$REGISTRY_DIR/$ROLE"
-  if [ ! -f "$TPL_DIR/template.env" ]; then
-    die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— and staging-box is in rig's own tree. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
-  fi
-  template_parse_env "$TPL_DIR/template.env" \
-    || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
-  TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
-fi
-# Same charset the users file enforces, for the same reasons (a leading '-'
-# reads as a usermod flag; '|', ':' corrupt things downstream).
-[[ "$TENANT_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
-  || die "invalid user: '$TENANT_USER' — must match ^[a-z_][a-z0-9_-]{0,31}\$" 2
 
 # --- guards ------------------------------------------------------------------
 # A tenant role converges a box GUEST. A box already carrying a machine-role
@@ -193,6 +169,34 @@ if [ -n "$EXISTING_ROOT_DOOR" ]; then
   if [ "$EXISTING_ROOT_DOOR" != "open" ]; then
     die "this box carries a machine role whose root door is not open (${EXISTING_MARKER}) — staging-box tolerates only the workload-joined guest (root-door=open host=no, or its pre-#77 spelling class=server). If this really is a staging-box guest, remove ${MARKER_PATH} and re-run."
   fi
+fi
+
+# --- the definition ----------------------------------------------------------
+# Resolved and parsed BEFORE the root check (but after the marker guards,
+# which need no definition and must stay refusable with no registry in
+# reach), so the two refusals a definition can earn — unknown role (listing
+# what the resolved source actually contains) and malformed data (naming the
+# failing key) — are testable non-root, offline, via RIG_TEMPLATES_DIR
+# fixtures. The parse is the mint's
+# own guard, deliberately duplicating the registry CI's lint: CI protects the
+# registry, this protects a mint served through RIG_TEMPLATES_REPO/_DIR that
+# CI never saw. template.env is parsed, NEVER sourced — a definition cannot
+# execute arbitrary shell through its data file; install.sh is the one
+# deliberately executable part, and it runs only after the root check below.
+trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
+TPL_DIR=""
+if [ "$ROLE" = "staging-box" ]; then
+  TENANT_USER="${TENANT_USER_OVERRIDE:-ops}"   # box#69's ops
+else
+  templates_resolve \
+    || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
+  TPL_DIR="$REGISTRY_DIR/$ROLE"
+  if [ ! -f "$TPL_DIR/template.env" ]; then
+    die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— and staging-box is in rig's own tree. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
+  fi
+  template_parse_env "$TPL_DIR/template.env" \
+    || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
+  TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 fi
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
