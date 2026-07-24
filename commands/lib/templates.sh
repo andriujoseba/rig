@@ -33,7 +33,11 @@
 # rig release freezes the mechanism+registry pair and a newer rig matches
 # newer templates by default (ruled 2026-07-24 on #110: pinned, not
 # main-tracked). RIG_TEMPLATES_REF overrides it per mint.
-RIG_TEMPLATES_PIN=30f4fa4dcb4e9f104058ad9dd5b7c42bafa98e73
+#
+# Currently the seed tree (rig-templates#1's head — fetchable from the
+# upstream archive already, an ancestor of its main once merged): the four
+# agent tenants ported byte-equivalent from the case arms this PR cut.
+RIG_TEMPLATES_PIN=be749f7fd1ff8dd7c2359bbce7fd6abd3f403eb0
 
 # The template.env schema. Grammar: blank lines, '#' comments, and
 # KEY="value" — nothing else. Parsed by regex, never sourced.
