@@ -51,6 +51,14 @@ REPO="${RIG_REPO:-heavy-duty/rig}"
 REF="${RIG_REF:-}"
 BOXREPO="${BOX_REPO:-heavy-duty/box}"
 BOXREF="${BOX_REF:-}"
+# The template registry the converge will read (#110). No explicitness
+# demand here, unlike the two refs above: the DEFAULT is already a pin — the
+# candidate tree's RIG_TEMPLATES_PIN, read after install from what actually
+# landed — so an unset override means "the ref the release will really use",
+# not "whatever main was that afternoon".
+TPLREPO="${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}"
+TPLREF="${RIG_TEMPLATES_REF:-}"
+TPL_SHA=""
 ROLE=staging-server
 USERS_FILE="${DRILL_USERS_FILE:-}"
 RUN_ID="${DRILL_RUN_ID:-drill-$(date -u +%F)}"
@@ -266,6 +274,8 @@ emit_record() {
     printf 'Run ID: %s. Host: %s, %s vCPU / %s GB RAM (%s).\n' "$RUN_ID" "${os:-unknown}" "$cpus" "$ram" "$virt"
     printf 'Candidate refs: rig@%s (RIG_REF=%s), box@%s (BOX_REF=%s).\n' \
       "${RIG_SHA:-unresolved}" "$REF" "${BOX_SHA:-unresolved}" "$BOXREF"
+    printf 'Template registry: %s@%s (ref %s) — the rig-templates the converge read (#110).\n' \
+      "${TPLREPO:-heavy-duty/rig-templates}" "${TPL_SHA:-unresolved}" "${TPLREF:-unresolved}"
     printf 'Instrument: drill/drill.sh, legs in execution order.\n\n'
     printf '| Leg | Result |\n'
     printf '| --- | --- |\n'
@@ -378,6 +388,21 @@ RIG_TREE="$(tree_of "$(command -v rig)")"
 assert_installed_from rig "$RIG_TREE" "$REPO@$REF" || exit 1
 DRILL_VERSION="$(head -n1 "$RIG_TREE/VERSION" 2>/dev/null || echo unknown)"
 ok "installed tree confirms: $REPO@$REF (version $DRILL_VERSION)"
+
+# The rig-templates ref this candidate converges (#110), for the record: the
+# env override when the drill was pointed somewhere, else the pin read from
+# the INSTALLED tree — what actually landed, never this checkout's copy. A
+# 40-hex ref IS its own SHA (the pin's normal shape); anything else resolves
+# through ref_sha like the two candidates above.
+if [ -z "$TPLREF" ]; then
+  TPLREF="$(sed -n 's/^RIG_TEMPLATES_PIN=//p' "$RIG_TREE/commands/lib/templates.sh" 2>/dev/null | head -n1)"
+fi
+if [[ "$TPLREF" =~ ^[0-9a-f]{40}$ ]]; then
+  TPL_SHA="${TPLREF:0:7}"
+elif [ -n "$TPLREF" ]; then
+  TPL_SHA="$(ref_sha "$TPLREPO" "$TPLREF")"
+fi
+inf "templates: $TPLREPO@${TPLREF:-unresolved} (${TPL_SHA:-unresolved})"
 [ -n "$RECORD" ] || RECORD="$ROOT/drills/$DRILL_VERSION.md"
 
 # =============================================================================

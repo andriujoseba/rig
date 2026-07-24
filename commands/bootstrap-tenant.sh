@@ -1,24 +1,34 @@
 #!/usr/bin/env bash
-# rig bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box> — the box TENANT
-# roles ('-box' names the family: a guest, vs the '-server' machine roles): what a
-# box-minted guest becomes (issue #31). box mints the thin, creds-free seed
-# (base image, user, rig preinstalled — heavy-duty/box#81); rig converges the
-# tenant content that used to live in the templates' cloud-init, idempotent and
-# effective-state asserted, so an EXISTING box can be re-run to a new spec
-# instead of re-minted. One mechanism, parameterized per tenant through
-# lib/tenant-config.sh — never four hand-maintained copies.
+# rig bootstrap <role>-box — the box TENANT roles ('-box' names the family: a
+# guest, vs the '-server' machine roles): what a box-minted guest becomes
+# (issue #31). box mints the thin, creds-free seed (base image, user, rig
+# preinstalled — heavy-duty/box#81); rig converges the tenant content that
+# used to live in the templates' cloud-init, idempotent and effective-state
+# asserted, so an EXISTING box can be re-run to a new spec instead of
+# re-minted.
+#
+# One MECHANISM, parameterized per tenant by a fetched DEFINITION (#110): the
+# agent-tenant registry lives in heavy-duty/rig-templates — one directory per
+# role (template.env, install.sh, creds.md), resolved through lib/templates.sh
+# (RIG_TEMPLATES_DIR > RIG_TEMPLATES_REF > the in-tree pin) — so adding a
+# tenant is a data PR there, never an edit here (#109 is the scar: adding
+# kimi, pure data, meant editing six files in this repo). staging-box is the
+# one in-tree tenant: it is mechanism-adjacent (sshd hardening, docker — no
+# agent, no CLI, no context file), so it converges from rig's own tree.
 #
 # Creds-free BY CONTRACT: box auto-runs these at mint ('box exec … rig
 # bootstrap claude-box'), so every path here is non-interactive and nothing joins
-# or admits — no tailnet, no keys, no prompts. staging-box's tailnet join stays
-# operator-run ('rig bootstrap workload-server' through 'box shell'), exactly the
-# creds split box#69 designed.
+# or admits — no tailnet, no keys, no prompts. That is also why the registry
+# fetch is UNAUTHENTICATED: a mint holds nothing to authenticate with.
+# staging-box's tailnet join stays operator-run ('rig bootstrap
+# workload-server' through 'box shell'), exactly the creds split box#69
+# designed.
 # Convergent: safe to re-run; a second run changes nothing.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-# shellcheck source=SCRIPTDIR/lib/tenant-config.sh
-. "$HERE/lib/tenant-config.sh"   # tenant_user / tenant_context_path / render_tenant_context
+# shellcheck source=SCRIPTDIR/lib/templates.sh
+. "$HERE/lib/templates.sh"       # templates_resolve / template_parse_env / render_tenant_context
 # shellcheck source=SCRIPTDIR/lib/users-config.sh
 . "$HERE/lib/users-config.sh"    # read_role_marker / root_door_of
 # shellcheck source=SCRIPTDIR/lib/sshd.sh
@@ -32,26 +42,35 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box> [--user <name>]
+usage: rig bootstrap <role>-box [--user <name>]
 
 Box TENANT roles — what a box-minted guest becomes. box mints the thin,
 creds-free seed (base image, user, rig preinstalled); this converges the
 tenant on top, and re-runs converge an existing box to a new spec.
 
-  claude-box|codex-box|grok-box|kimi-box
-                      the agent tenants: base tooling (git, gh, tmux, …),
+  <role>-box          an agent tenant DEFINED IN THE REGISTRY
+                      (heavy-duty/rig-templates — claude-box, codex-box,
+                      grok-box, kimi-box, …): base tooling (git, gh, tmux, …),
                       docker, the agent's CLI on the system PATH, and the
                       agent-context file — including the box#80 guard: never
                       run `box setup-host` or the drill inside a box.
-  staging-box         the server tenant (box#69's posture): docker + sshd
-                      hardening. The tailnet workload join is deliberately
-                      NOT here — it holds a credential, so it stays
-                      operator-run: `box shell` → `sudo rig bootstrap
-                      workload-server` with a tagged pre-auth key.
+  staging-box         the server tenant (box#69's posture), in rig's own
+                      tree: docker + sshd hardening. The tailnet workload
+                      join is deliberately NOT here — it holds a credential,
+                      so it stays operator-run: `box shell` → `sudo rig
+                      bootstrap workload-server` with a tagged pre-auth key.
 
   --user <name>       the tenant user the box seed created (default: the
-                      role's name minus the suffix; staging-box defaults to
-                      `ops`)
+                      definition's USER; staging-box defaults to `ops`)
+
+The registry source is three knobs, precedence high to low:
+  RIG_TEMPLATES_DIR   a local folder (no fetch — the offline/test path, and
+                      "try a template before it exists anywhere")
+  RIG_TEMPLATES_REF   a ref of RIG_TEMPLATES_REPO (default
+                      heavy-duty/rig-templates), fetched as a tarball
+  (neither set)       the ref pinned in rig's tree (lib/templates.sh
+                      RIG_TEMPLATES_PIN — bumped by ordinary rig PR, so a
+                      rig release freezes the mechanism+registry pair)
 
 Tenant roles are creds-free and non-interactive by contract — box auto-runs
 them at mint (`box exec … rig bootstrap claude-box`). They take none of the
@@ -63,19 +82,35 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  claude-box|codex-box|grok-box|kimi-box|staging-box) shift ;;
+  staging-box) shift ;;
+  *-box)
+    # The family suffix is the whole gate here — WHICH '-box' roles exist is
+    # the resolved registry's fact, checked below, so a template added to the
+    # registry is mintable with zero code changes in rig (#110).
+    shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "tenant role required (claude-box|codex-box|grok-box|kimi-box|staging-box)" 2 ;;
-  *) die "unknown tenant role: $ROLE (want claude-box|codex-box|grok-box|kimi-box|staging-box)" 2 ;;
+  "") usage >&2; die "tenant role required (a '-box' role from the template registry, or staging-box)" 2 ;;
+  *) die "unknown tenant role: $ROLE — tenant roles carry the '-box' family suffix (#76); the machine roles are control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom" 2 ;;
 esac
+# The suffix rule above admits ANY '-box' name, so the charset is pinned
+# before the name is ever used as a path component: a crafted role dies HERE,
+# never in a registry lookup (the valid_version discipline, bin/rig).
+[[ "$ROLE" =~ ^[a-z][a-z0-9-]*-box$ ]] \
+  || die "invalid tenant role name: '$ROLE' — must match ^[a-z][a-z0-9-]*-box\$" 2
 
-TENANT_USER="$(tenant_user "$ROLE")"
+TENANT_USER_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --user)
       [ $# -ge 2 ] || die "--user needs a value" 2
-      TENANT_USER="$2"; shift 2 ;;
+      TENANT_USER_OVERRIDE="$2"; shift 2
+      # Same charset the users file enforces, for the same reasons (a leading
+      # '-' reads as a usermod flag; '|', ':' corrupt things downstream).
+      # Checked HERE, at parse — the definition's USER is checked by the
+      # parser — so the refusal needs no registry and no network.
+      [[ "$TENANT_USER_OVERRIDE" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+        || die "invalid user: '$TENANT_USER_OVERRIDE' — must match ^[a-z_][a-z0-9_-]{0,31}\$" 2 ;;
     --hostname|--root-door|--host|--join)
       # The machine-role traits, refused with a story rather than "unknown
       # flag": a tenant is a guest, not a tailnet machine — its shape comes
@@ -89,10 +124,6 @@ while [ $# -gt 0 ]; do
     *) die "unknown flag: $1" 2 ;;
   esac
 done
-# Same charset the users file enforces, for the same reasons (a leading '-'
-# reads as a usermod flag; '|', ':' corrupt things downstream).
-[[ "$TENANT_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
-  || die "invalid user: '$TENANT_USER' — must match ^[a-z_][a-z0-9_-]{0,31}\$" 2
 
 # --- guards ------------------------------------------------------------------
 # A tenant role converges a box GUEST. A box already carrying a machine-role
@@ -140,6 +171,34 @@ if [ -n "$EXISTING_ROOT_DOOR" ]; then
   fi
 fi
 
+# --- the definition ----------------------------------------------------------
+# Resolved and parsed BEFORE the root check (but after the marker guards,
+# which need no definition and must stay refusable with no registry in
+# reach), so the two refusals a definition can earn — unknown role (listing
+# what the resolved source actually contains) and malformed data (naming the
+# failing key) — are testable non-root, offline, via RIG_TEMPLATES_DIR
+# fixtures. The parse is the mint's
+# own guard, deliberately duplicating the registry CI's lint: CI protects the
+# registry, this protects a mint served through RIG_TEMPLATES_REPO/_DIR that
+# CI never saw. template.env is parsed, NEVER sourced — a definition cannot
+# execute arbitrary shell through its data file; install.sh is the one
+# deliberately executable part, and it runs only after the root check below.
+trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
+TPL_DIR=""
+if [ "$ROLE" = "staging-box" ]; then
+  TENANT_USER="${TENANT_USER_OVERRIDE:-ops}"   # box#69's ops
+else
+  templates_resolve \
+    || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
+  TPL_DIR="$REGISTRY_DIR/$ROLE"
+  if [ ! -f "$TPL_DIR/template.env" ]; then
+    die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— and staging-box is in rig's own tree. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
+  fi
+  template_parse_env "$TPL_DIR/template.env" \
+    || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
+  TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
+fi
+
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 if [ -r /etc/os-release ]; then
   # Sourced in a subshell: os-release defines VERSION, NAME, ID, etc. —
@@ -178,19 +237,18 @@ append_line_once() {
 export DEBIAN_FRONTEND=noninteractive
 log "installing base packages (tenant ${ROLE})"
 apt-get update -qq
-case "$ROLE" in
-  claude-box)
-    # The claude-box tenant keeps zsh (its shell UX ships with the box); the
-    # remaining list is the shared agent toolbelt the templates carried.
-    apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential zsh ;;
-  codex-box|grok-box|kimi-box)
-    apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential ;;
-  staging-box)
-    # openssh-server: the hardening drop-in below targets /etc/ssh/sshd_config.d/,
-    # which only exists once the package is installed — pristine container/VM
-    # images (and thin seeds) do not ship it.
-    apt-get install -y -qq curl ca-certificates tmux openssh-server ;;
-esac
+if [ "$ROLE" = "staging-box" ]; then
+  # openssh-server: the hardening drop-in below targets /etc/ssh/sshd_config.d/,
+  # which only exists once the package is installed — pristine container/VM
+  # images (and thin seeds) do not ship it.
+  apt-get install -y -qq curl ca-certificates tmux openssh-server
+else
+  # The shared agent toolbelt the templates carried, plus the definition's
+  # APT_EXTRAS (claude-box's zsh rides there). Unquoted on purpose — it is a
+  # word list, every word already vetted by the parser's package-name gate.
+  # shellcheck disable=SC2086
+  apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential $TPL_APT_EXTRAS
+fi
 # Assert the effective toolbelt, not apt's exit code — tmux is the box#65
 # contract ('box tmux' runs tmux new-session inside every box) and gh is how
 # the operator's git credential lands.
@@ -232,17 +290,19 @@ else
   warn "no docker group after install — skipping the ${TENANT_USER} group add; check docker's install"
 fi
 
-# --- node (claude-box, codex-box) ----------------------------------------------------
-# Codex is an npm global needing Node 22+ (the SCOPED @openai/codex — verified
-# upstream when the template was written); the claude-box tenant ships node as part
-# of its toolbelt, same pin. grok's CLI is a self-contained binary: no node.
+# --- node (definitions carrying NEEDS_NODE="yes") ----------------------------
+# An npm-installed CLI needs Node 22+ (codex — the SCOPED @openai/codex,
+# verified upstream when the template was written); claude ships node as part
+# of its toolbelt, same pin. Whether a tenant needs it is the DEFINITION's
+# fact (NEEDS_NODE), never a role list here — grok's CLI is a self-contained
+# binary and kimi's is uv-managed Python, so both say no.
 node_ok() {
   command -v node >/dev/null 2>&1 || return 1
   local major
   major="$(node --version 2>/dev/null | sed -E 's/^v([0-9]+)\..*$/\1/')"
   [ "${major:-0}" -ge 22 ] 2>/dev/null
 }
-if [ "$ROLE" = "claude-box" ] || [ "$ROLE" = "codex-box" ]; then
+if [ "$ROLE" != "staging-box" ] && [ "$TPL_NEEDS_NODE" = "yes" ]; then
   if node_ok; then
     log "node $(node --version) already present"
   else
@@ -254,60 +314,53 @@ if [ "$ROLE" = "claude-box" ] || [ "$ROLE" = "codex-box" ]; then
 fi
 
 # --- the agent CLI -----------------------------------------------------------
-# Per-agent install, shared discipline: install only when the CLI is absent
-# (upgrades are the CLI's own business), then put it on the SYSTEM path —
-# 'box exec <box> -- <cli> …' runs a NON-interactive shell that reads no rc
-# files, so a PATH export alone is invisible to it (the #15 lesson) — and
-# assert it ANSWERS as the tenant user: a CLI that exists but cannot run is
-# what cost the last drill (the grok-box template's scar).
+# Per-definition install, shared discipline: install only when the CLI is
+# absent (upgrades are the CLI's own business) — presence is CLI_SRC when the
+# definition names one, `command -v` when it does not (an npm global's path
+# is the prefix's fact, not the data file's) — then put it on the SYSTEM
+# path: 'box exec <box> -- <cli> …' runs a NON-interactive shell that reads
+# no rc files, so a PATH export alone is invisible to it (the #15 lesson).
+# And assert it ANSWERS as the tenant user: a CLI that exists but cannot run
+# is what cost the last drill (the grok-box template's scar).
+#
+# install.sh — the definition's one executable part — runs AS ROOT with the
+# tenant named in its environment (TENANT_USER/TENANT_HOME/TENANT_GROUP/ROLE);
+# each definition drops to the tenant user itself (runuser -l) where the
+# vendor's layout demands it, because some installs are inherently root's
+# (codex's npm -g writes the global prefix). This is the trade #110 states in
+# bold — a registry definition executes as root inside every future mint —
+# and it is why install.sh diffs there are the highest-trust review surface
+# in the org, why the default ref is a reviewed in-tree pin, and why the data
+# file beside it is parsed rather than sourced.
 CLI="" CLI_SRC=""
-case "$ROLE" in
-  claude-box)
-    CLI=claude CLI_SRC="$TENANT_HOME/.local/bin/claude"
-    if [ ! -e "$CLI_SRC" ]; then
-      log "installing the Claude Code CLI as ${TENANT_USER}"
-      runuser -l "$TENANT_USER" -c 'curl -fsSL https://claude.ai/install.sh | bash'
-    else
-      log "claude CLI already installed"
-    fi ;;
-  codex-box)
-    CLI=codex
-    if ! command -v codex >/dev/null 2>&1; then
-      log "installing the Codex CLI (npm global)"
-      npm install -g @openai/codex
-    else
-      log "codex CLI already installed"
-    fi
-    CLI_SRC="$(npm prefix -g)/bin/codex" ;;
-  grok-box)
-    # The OFFICIAL installer (x.ai/cli/install.sh): installs the CLI as `grok`,
-    # a SYMLINK under $HOME/.grok/bin pointing into its versioned download dir.
-    # Run it AS the tenant user, never root: a symlink into root's 0700 home
-    # would be a CLI that exists and cannot run.
-    CLI=grok CLI_SRC="$TENANT_HOME/.grok/bin/grok"
-    if [ ! -e "$CLI_SRC" ]; then
-      log "installing the Grok CLI as ${TENANT_USER}"
-      runuser -l "$TENANT_USER" -c 'curl -fsSL https://x.ai/cli/install.sh | bash'
-    else
-      log "grok CLI already installed"
-    fi ;;
-  kimi-box)
-    # The OFFICIAL installer (code.kimi.com/install.sh): a uv-managed Python
-    # tool (kimi-cli), landing `kimi` in ~/.local/bin — uv's tool bin — with
-    # uv bringing its own managed CPython, so no apt python pin here (the
-    # node section above stays claude/codex-only for the same reason). Run AS
-    # the tenant user, never root: grok's lesson — a root-owned install under
-    # a 0700 home is a CLI that exists and cannot run.
-    CLI=kimi CLI_SRC="$TENANT_HOME/.local/bin/kimi"
-    if [ ! -e "$CLI_SRC" ]; then
-      log "installing the Kimi CLI as ${TENANT_USER}"
-      runuser -l "$TENANT_USER" -c 'curl -LsSf https://code.kimi.com/install.sh | bash'
-    else
-      log "kimi CLI already installed"
-    fi ;;
-  staging-box) ;;   # no agent lives on the staging-box tenant
-esac
-if [ -n "$CLI" ]; then
+if [ "$ROLE" != "staging-box" ]; then
+  CLI="$TPL_CLI_NAME"
+  # '~/' in CLI_SRC is data — expanded to the tenant home HERE, by string
+  # substitution, never by the shell (hence the literal quoted tilde, SC2088).
+  # shellcheck disable=SC2088
+  case "$TPL_CLI_SRC" in
+    '~/'*) CLI_SRC="$TENANT_HOME/${TPL_CLI_SRC#'~/'}" ;;
+    *)     CLI_SRC="$TPL_CLI_SRC" ;;
+  esac
+  installed=""
+  if [ -n "$CLI_SRC" ]; then
+    [ -e "$CLI_SRC" ] && installed=1
+  elif command -v "$CLI" >/dev/null 2>&1; then
+    installed=1
+  fi
+  if [ -z "$installed" ]; then
+    log "installing the ${CLI} CLI (${ROLE}'s install.sh)"
+    TENANT_USER="$TENANT_USER" TENANT_HOME="$TENANT_HOME" \
+      TENANT_GROUP="$TENANT_GROUP" ROLE="$ROLE" \
+      bash "$TPL_DIR/install.sh" \
+      || die "${ROLE}'s install.sh failed — the definition is $(templates_source_desc)"
+  else
+    log "${CLI} CLI already installed"
+  fi
+  if [ -z "$CLI_SRC" ]; then
+    CLI_SRC="$(command -v "$CLI" 2>/dev/null || true)"
+    [ -n "$CLI_SRC" ] || die "the ${CLI} installer put no '${CLI}' on root's PATH and the definition names no CLI_SRC — upstream layout changed?"
+  fi
   [ -e "$CLI_SRC" ] || die "the ${CLI} installer produced no ${CLI_SRC} — upstream layout changed?"
   ln -sf "$CLI_SRC" "/usr/local/bin/$CLI"
   # One capture serves both the assert and the log line; emptiness IS the
@@ -316,29 +369,23 @@ if [ -n "$CLI" ]; then
   [ -n "$CLI_VER" ] || die "'$CLI --version' does not answer for ${TENANT_USER} — the CLI landed but cannot run; check /usr/local/bin/$CLI and its target"
   log "${CLI} CLI on the system PATH and answering (${CLI_VER})"
 
-  # The interactive-shell PATH exports the templates carried, converged as
-  # literal rc lines (written once, never duplicated). Single quotes are the
-  # point: the line must expand in the USER's shell, not here.
-  # shellcheck disable=SC2016
-  case "$ROLE" in
-    claude-box)
-      append_line_once "$TENANT_HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' ;;
-    codex-box)
-      append_line_once "$TENANT_HOME/.bashrc" 'export PATH="$(npm prefix -g)/bin:$PATH"' ;;
-    grok-box)
-      append_line_once "$TENANT_HOME/.bashrc" 'export PATH="$HOME/.grok/bin:$PATH"' ;;
-    kimi-box)
-      append_line_once "$TENANT_HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' ;;
-  esac
+  # The interactive-shell PATH export the templates carried, converged as a
+  # literal rc line (written once, never duplicated). The definition's
+  # PATH_LINE is DATA, appended verbatim: it must expand in the USER's
+  # shell, not here.
+  append_line_once "$TENANT_HOME/.bashrc" "$TPL_PATH_LINE"
 fi
 
 # --- the agent-context file --------------------------------------------------
-# The one file every agent reads before touching anything. Rendered from
-# lib/tenant-config.sh — the box#80 guard note ("never run box setup-host or
-# the drill inside a box; the box you are in is not a host you own") lives
-# there ONCE, for all agents, instead of copy-pasted per template. cmp-guarded
-# like every file rig converges.
-if CTX_PATH="$(tenant_context_path "$ROLE" "$TENANT_HOME")"; then
+# The one file every agent reads before touching anything. The skeleton —
+# including the box#80 guard note ("never run box setup-host or the drill
+# inside a box; the box you are in is not a host you own") — is MECHANISM,
+# rendered from lib/templates.sh ONCE for all agents, never copy-pasted per
+# template; only the creds paragraph is the definition's (creds.md).
+# cmp-guarded like every file rig converges. staging-box has no agent and no
+# context file.
+if [ "$ROLE" != "staging-box" ]; then
+  CTX_PATH="$TENANT_HOME/$TPL_CONTEXT_PATH"
   CTX_DIR="$(dirname "$CTX_PATH")"
   if [ ! -d "$CTX_DIR" ]; then
     mkdir -p "$CTX_DIR"
@@ -348,7 +395,7 @@ if CTX_PATH="$(tenant_context_path "$ROLE" "$TENANT_HOME")"; then
   # its ownership is converged on every run, not only on creation.
   chown "$TENANT_USER:$TENANT_GROUP" "$CTX_DIR"
   CTX_TMP="$(mktemp)"
-  render_tenant_context "$ROLE" > "$CTX_TMP"
+  render_tenant_context "$ROLE" "$TPL_DIR/creds.md" > "$CTX_TMP"
   if ! cmp -s "$CTX_TMP" "$CTX_PATH" 2>/dev/null; then
     install -m 0644 -o "$TENANT_USER" -g "$TENANT_GROUP" "$CTX_TMP" "$CTX_PATH"
     log "agent-context file written: ${CTX_PATH}"
@@ -356,32 +403,6 @@ if CTX_PATH="$(tenant_context_path "$ROLE" "$TENANT_HOME")"; then
     log "agent-context file already current"
   fi
   rm -f "$CTX_TMP"
-fi
-
-# --- claude-box shell niceties ---------------------------------------------------
-# The claude-box template shipped zsh + oh-my-zsh + tmux mouse mode; they move with
-# the tenant. oh-my-zsh is a cosmetic EXTRA: its failure warns, never aborts a
-# bootstrap whose real work (CLI, context, docker) already converged.
-if [ "$ROLE" = "claude-box" ]; then
-  if [ "$(getent passwd "$TENANT_USER" | cut -d: -f7)" != "/usr/bin/zsh" ]; then
-    chsh -s /usr/bin/zsh "$TENANT_USER"
-    log "login shell set to zsh for ${TENANT_USER}"
-  else
-    log "login shell already zsh for ${TENANT_USER}"
-  fi
-  if [ ! -d "$TENANT_HOME/.oh-my-zsh" ]; then
-    log "installing oh-my-zsh for ${TENANT_USER}"
-    # Single quotes on purpose: the $(...) must run in the USER's shell.
-    # shellcheck disable=SC2016
-    runuser -l "$TENANT_USER" -c 'RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"' \
-      || warn "oh-my-zsh install failed — cosmetic only; continuing"
-  else
-    log "oh-my-zsh already installed"
-  fi
-  # After oh-my-zsh (it rewrites .zshrc on first install).
-  # shellcheck disable=SC2016
-  append_line_once "$TENANT_HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"'
-  append_line_once "$TENANT_HOME/.tmux.conf" 'set -g mouse on'
 fi
 
 # --- staging-box server posture --------------------------------------------------

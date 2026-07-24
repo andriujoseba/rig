@@ -572,19 +572,53 @@ else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
 
-# --- box tenant roles (#31/#76): claude-box|codex-box|grok-box|kimi-box|staging-box ---
+# --- box tenant roles (#31/#76/#110): <role>-box from the registry + staging-box ---
 # What a box-minted guest becomes — ONE mechanism (bootstrap-tenant.sh),
-# parameterized per tenant through lib/tenant-config.sh, dispatched from
-# bootstrap.sh so `rig bootstrap <role>` stays the single entrypoint. The real
-# converge needs root, a tenant user, and the network — the container
-# rehearsal's job — so the harness proves what it can non-root: the whole
-# arg/refusal surface, the pure parameter table, the rendered agent-context
-# file (guard note included), and grep-pins on the shipped script.
+# parameterized per DEFINITION fetched from the template registry
+# (heavy-duty/rig-templates; lib/templates.sh resolves RIG_TEMPLATES_DIR >
+# RIG_TEMPLATES_REF > the in-tree pin), dispatched from bootstrap.sh on the
+# '-box' FAMILY SUFFIX so `rig bootstrap <role>` stays the single entrypoint
+# and a template added to the registry is mintable with zero code changes
+# here. The real converge needs root, a tenant user, and the network — the
+# container rehearsal's job — so the harness proves what it can non-root and
+# OFFLINE: the whole refusal surface, the resolution precedence, the parser
+# and the renderer, against fixture definitions via RIG_TEMPLATES_DIR.
+
+# The fixture registry: one valid scratch definition, plus broken ones the
+# parser must refuse BY NAME. Synthetic on purpose — the real definitions
+# live in heavy-duty/rig-templates, and this suite must hold whatever those
+# say (offline is the point: no fetch, no network, no coupling).
+TPL_FIX="$(mktemp -d)"
+mkdir -p "$TPL_FIX/scratch-box"
+cat > "$TPL_FIX/scratch-box/template.env" <<'TPLEOF'
+# comments and blank lines are the only non-KEY="value" grammar
+
+USER="scratch"
+CONTEXT_PATH=".scratch/AGENTS.md"
+CLI_NAME="scratch"
+CLI_SRC="~/.local/bin/scratch"
+PATH_LINE="export PATH="$HOME/.local/bin:$PATH""
+NEEDS_NODE="no"
+APT_EXTRAS="zsh"
+TPLEOF
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TPL_FIX/scratch-box/install.sh"
+printf -- '- **Creds-free by default.** The scratch vendor paragraph.\n' > "$TPL_FIX/scratch-box/creds.md"
+mkdir -p "$TPL_FIX/badkey-box"
+printf 'USER="x"\nCOLOR="red"\n' > "$TPL_FIX/badkey-box/template.env"
+mkdir -p "$TPL_FIX/missing-box"
+printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nPATH_LINE="p"\n' > "$TPL_FIX/missing-box/template.env"
+mkdir -p "$TPL_FIX/garbled-box"
+printf 'USER=unquoted\n' > "$TPL_FIX/garbled-box/template.env"
+mkdir -p "$TPL_FIX/badnode-box"
+printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nNEEDS_NODE="maybe"\n' > "$TPL_FIX/badnode-box/template.env"
+mkdir -p "$TPL_FIX/badapt-box"
+printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nAPT_EXTRAS="zsh -o"\n' > "$TPL_FIX/badapt-box/template.env"
+
 # THE HARD CUT, tenant half (#76). The pre-rename names are gone and must fail
 # as UNKNOWN — asserted per name, because an alias left in for one tenant is the
-# shape that survives review: the taxonomy reads complete while one old name
-# still quietly converges. Checked at BOTH entrypoints, since bootstrap.sh has
-# its own dispatch list and a name could survive in one and not the other.
+# shape that survives review. And the #110 cut on top: the mechanism no longer
+# KNOWS any agent tenant by name — which '-box' roles exist is the registry's
+# fact, so the old names die on the family-suffix rule, not an enumerated list.
 for r in claude codex grok staging; do
   check "tenant: the pre-#76 name '$r' is gone (tenant entrypoint)" 2 "unknown tenant role" \
     "$ROOT/commands/bootstrap-tenant.sh" "$r"
@@ -593,39 +627,46 @@ for r in claude codex grok staging; do
 done
 check "tenant: --help exits 0"          0 "usage:" "$ROOT/commands/bootstrap-tenant.sh" --help
 check "tenant: role required, exit 2"   2 "tenant role required" "$ROOT/commands/bootstrap-tenant.sh"
-check "tenant: unknown role exits 2"    2 "unknown tenant role" "$ROOT/commands/bootstrap-tenant.sh" potato
+check "tenant: a suffix-less role exits 2" 2 "unknown tenant role" "$ROOT/commands/bootstrap-tenant.sh" potato
 check "tenant: unknown flag exits 2"    2 "unknown flag" "$ROOT/commands/bootstrap-tenant.sh" claude-box --nope
 check "tenant: --user needs value"      2 "needs a value" "$ROOT/commands/bootstrap-tenant.sh" claude-box --user
 check "tenant: bad --user charset exits 2" 2 "invalid user" "$ROOT/commands/bootstrap-tenant.sh" claude-box --user 'fo|o'
-# The docker converge asserts the DAEMON answers, not just the client binary —
-# a dead dockerd passing `docker --version` is the "linked but cannot run"
-# scar in daemon form. Grep-pinned so the assert cannot ship deleted.
+# The suffix rule admits ANY '-box' name, so the charset gate must catch a
+# crafted one BEFORE it is used as a path component (the valid_version
+# discipline): uppercase, dots, a leading '-' all die at the name, never in a
+# registry lookup.
+check "tenant: a crafted role name dies at the charset gate" 2 "invalid tenant role name" \
+  "$ROOT/commands/bootstrap-tenant.sh" 'UPPER-box'
 check "tenant: dockerd effective-state assert is present" 0 "" \
   grep -qF "docker info" "$ROOT/commands/bootstrap-tenant.sh"
 # The machine-role traits die with the tenant story, never "unknown flag" — an
-# operator reaching for --hostname must learn where the trait family went.
+# operator coming from the machine families needs the boundary, not a shrug.
 check "tenant: trait flags die with the tenant story" 2 "have no traits" \
   "$ROOT/commands/bootstrap-tenant.sh" claude-box --root-door closed
 check "tenant: --hostname dies the same way" 2 "have no traits" \
   "$ROOT/commands/bootstrap-tenant.sh" staging-box --hostname my-guest
-# Dispatch: the machine-role entrypoint hands tenant roles to the tenant
-# mechanism with args intact (--help reaching the TENANT usage proves both).
-check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude-box|codex-box|grok-box|kimi-box|staging-box" \
+# Dispatch: the machine-role entrypoint hands ANY '-box' role to the tenant
+# mechanism on the family suffix — enumerating them would re-chain template
+# velocity to rig edits, the exact coupling #110 removes.
+check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "Box TENANT roles" \
   "$ROOT/commands/bootstrap.sh" claude-box --help
-# The marker guard fires BEFORE the root check (repo precedent: the coolify
-# marker warning), so the refusals are provable here off fixture markers. A
+check "bootstrap: an unheard-of '-box' role still dispatches (zero code changes)" 0 "Box TENANT roles" \
+  "$ROOT/commands/bootstrap.sh" scratch-box --help
+
+# The tenant marker guard (#83), against marker FIXTURES (never the harness
+# machine's real /etc/rig/role): converging a tenant onto a machine-role box or a
 # VM host (host=yes) refuses for every tenant — and names the staging PAIR,
-# because whoever lands here has the two halves confused and wants the metal
+# because whoever hits it has the halves confused: the guest (staging-box), the metal
 # (staging-server). An agent tenant refuses ANY machine-role box; staging-box
-# tolerates ONLY root-door=open with host=no — that is the guest after its
-# operator-run workload join, and re-converging it is what convergence is for.
-# A closed-door machine (root-door=closed via custom) is NOT that guest, and
-# open-door hardening would die at it with root-door=open-specific messaging —
-# refuse instead.
+# tolerates exactly the workload-joined guest (root-door=open host=no) and refuses the
+# rest. These need no registry: the guards run before the resolution, so a
+# poisoning converge is refused even when the registry is unreachable.
 TEN_FIX="$(mktemp -d)"
-printf 'role=dev-server root-door=closed host=yes join=authkey\n'      > "$TEN_FIX/host"
-printf 'role=workload-server root-door=open host=no join=authkey\n'    > "$TEN_FIX/machine"
-printf 'role=custom root-door=closed host=no join=login\n'             > "$TEN_FIX/closed"
+printf 'role=workload-server root-door=open host=no join=authkey\n' > "$TEN_FIX/machine"
+printf 'role=custom root-door=closed host=no join=authkey\n'        > "$TEN_FIX/closed"
+printf 'role=staging-server root-door=open host=yes join=authkey\n' > "$TEN_FIX/host"
+printf 'role=workload class=server\n'                               > "$TEN_FIX/pre77-machine"
+printf 'role=dev class=human\n'                                     > "$TEN_FIX/pre77-human"
 printf 'role=claude-box tenant=yes host=no\n'                  > "$TEN_FIX/tenant"
 check "tenant: staging-box refuses a closed-door machine box" 1 "root door is not open" \
   env RIG_ROLE_MARKER="$TEN_FIX/closed" "$ROOT/commands/bootstrap-tenant.sh" staging-box
@@ -635,30 +676,69 @@ check "tenant: the host refusal sends you to the metal half of the pair" 1 "stag
   env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" staging-box
 check "tenant: an agent role refuses a machine-role box" 1 "never tailnet machines" \
   env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" claude-box
-
 # The tenant guard's compat read (#77). This guard asks "does this marker name
-# a root-door policy?" as its proxy for "is this a real fleet machine?", and it
-# must ask it in BOTH vocabularies. Kept deliberately at the retired spelling,
-# same reason as the close-root fixtures below: a pre-#77 box that stops
-# looking like a machine here is the fail-OPEN direction of this rename — the
-# agent-tenant refusal never fires, and `rig bootstrap claude-box` converges a
-# tenant straight over a live fleet box, clobbering the marker that holds its
-# root-door policy. Do not modernize these two fixtures.
-printf 'role=workload-server class=server host=no join=authkey\n'      > "$TEN_FIX/pre77-machine"
-printf 'role=custom class=human host=no join=login\n'                  > "$TEN_FIX/pre77-human"
+# a root-door policy?" through the resolver, so the pre-#77 spelling counts —
+# pattern-matching one spelling would fail OPEN here: the marker stops looking
+# like a machine's, the refusal never fires, and a tenant converge clobbers a
+# live fleet box's marker.
 check "tenant: an agent role refuses a PRE-#77 machine marker" 1 "never tailnet machines" \
   env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" "$ROOT/commands/bootstrap-tenant.sh" claude-box
 check "tenant: staging-box refuses a PRE-#77 closed-door machine box" 1 "root door is not open" \
   env RIG_ROLE_MARKER="$TEN_FIX/pre77-human" "$ROOT/commands/bootstrap-tenant.sh" staging-box
+# ...and the guard needs no registry: an unreachable RIG_TEMPLATES_DIR must
+# not stop a refusal that protects a live fleet box.
+check "tenant: the marker guard fires even with the registry unreachable" 1 "never tailnet machines" \
+  env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR=/nonexistent/registry \
+  "$ROOT/commands/bootstrap-tenant.sh" claude-box
+
+# The definition surface (#110), offline via RIG_TEMPLATES_DIR. An unknown
+# role's refusal LISTS what the resolved source actually contains and names
+# the source — a misconfigured RIG_TEMPLATES_REPO/_REF/_DIR must be visible
+# in the error rather than looking like a typo.
+check "tenant: unknown role lists the resolved registry" 2 "scratch-box" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" nosuch-box
+check "tenant: the unknown-role refusal names the source" 2 "RIG_TEMPLATES_DIR" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" nosuch-box
+check "tenant: an unreadable RIG_TEMPLATES_DIR refuses loudly" 2 "not a directory" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR=/nonexistent/registry \
+  "$ROOT/commands/bootstrap-tenant.sh" scratch-box
+# _DIR outranks _REF: with both set, resolution must not touch the network —
+# provable offline exactly because a fetch attempt would fail here.
+check "tenant: RIG_TEMPLATES_DIR outranks RIG_TEMPLATES_REF" 2 "scratch-box" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" RIG_TEMPLATES_REF=some-branch \
+  "$ROOT/commands/bootstrap-tenant.sh" nosuch-box
+# A malformed definition is refused at bootstrap BY KEY (the box.env
+# discipline: parsed, never sourced — so a template cannot execute arbitrary
+# shell through the data file). The registry CI's lint is the other gate;
+# this one protects a mint served through a source CI never saw.
+check "tenant: an unknown key is refused by name" 2 "unknown key: COLOR" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" badkey-box
+check "tenant: a missing required key is refused by name" 2 "missing required key: CLI_NAME" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" missing-box
+check "tenant: a non-KEY=\"value\" line is refused with its line number" 2 'not KEY="value"' \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" garbled-box
+check "tenant: a bad NEEDS_NODE value is refused by key" 2 "NEEDS_NODE" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" badnode-box
+check "tenant: an option riding APT_EXTRAS is refused by key" 2 "APT_EXTRAS" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" badapt-box
 if [ "$(id -u)" -ne 0 ]; then
   # RIG_ROLE_MARKER pinned to the absent fixture: the marker guard runs before
   # the root check, and the harness machine may carry a real /etc/rig/role.
-  check "tenant: claude-box parses, refuses non-root" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" claude-box
-  check "tenant: codex-box parses, refuses non-root"  1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" codex-box
-  check "tenant: grok-box parses, refuses non-root"   1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" grok-box
+  # Reaching the root check proves the whole pre-root surface passed: the
+  # name, the flags, the guard, the resolution AND the parse.
+  check "tenant: a valid definition parses, refuses non-root" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+    "$ROOT/commands/bootstrap-tenant.sh" scratch-box
+  check "tenant: staging-box needs no registry at all" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR=/nonexistent/registry \
+    "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: staging-box tolerates a workload-joined guest's marker" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" staging-box
   # ...and the same guest joined before #77: reaching the root check (rather
@@ -666,53 +746,127 @@ if [ "$(id -u)" -ne 0 ]; then
   check "tenant: staging-box tolerates a PRE-#77 workload-joined guest" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: a tenant marker re-runs fine (convergence)" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/tenant" "$ROOT/commands/bootstrap-tenant.sh" claude-box
+    env RIG_ROLE_MARKER="$TEN_FIX/tenant" RIG_TEMPLATES_DIR="$TPL_FIX" \
+    "$ROOT/commands/bootstrap-tenant.sh" scratch-box
 else
   echo "skip: tenant non-root refusals (running as root)"
 fi
 rm -rf "$TEN_FIX"
 
-# The per-tenant parameter table and the agent-context renderer are pure lib
-# functions on purpose (repo precedent: parse_users_file, json_string_array):
-# the CLI path to them sits behind root + a real tenant user, so the harness
-# proves them here, sourced, non-root and network-free.
-tuser() { bash -c 'set -euo pipefail
-  . "$1/commands/lib/tenant-config.sh"; tenant_user "$2"' _ "$ROOT" "$1"; }
-tpath() { bash -c 'set -euo pipefail
-  . "$1/commands/lib/tenant-config.sh"; tenant_context_path "$2" "$3"' _ "$ROOT" "$1" "$2"; }
-tctx()  { bash -c 'set -euo pipefail
-  . "$1/commands/lib/tenant-config.sh"; render_tenant_context "$2"' _ "$ROOT" "$1"; }
-check "tenant params: agent users are named after their agent" 0 "claude" tuser claude-box
-check "tenant params: kimi's user drops the suffix too" 0 "kimi" tuser kimi-box
-check "tenant params: staging's user is box#69's ops" 0 "ops" tuser staging-box
-check "tenant params: claude context lands in ~/.claude/CLAUDE.md" 0 "/home/claude/.claude/CLAUDE.md" tpath claude-box /home/claude
-check "tenant params: codex context lands in ~/.codex/AGENTS.md" 0 "/home/codex/.codex/AGENTS.md" tpath codex-box /home/codex
-check "tenant params: grok context lands in ~/.grok/AGENTS.md" 0 "/home/grok/.grok/AGENTS.md" tpath grok-box /home/grok
-check "tenant params: kimi context lands in ~/.kimi/AGENTS.md" 0 "/home/kimi/.kimi/AGENTS.md" tpath kimi-box /home/kimi
-check "tenant params: staging has no context file" 1 "" tpath staging-box /home/ops
-# The box#80 guard note lives ONCE, in the renderer, and every agent's file
-# carries it — the layering decision's whole point: never per-template again.
-check "tenant context: claude carries the box#80 guard" 0 "box setup-host" tctx claude-box
-check "tenant context: codex carries the box#80 guard"  0 "box setup-host" tctx codex-box
-check "tenant context: grok carries the box#80 guard"   0 "box setup-host" tctx grok-box
-check "tenant context: kimi carries the box#80 guard"   0 "box setup-host" tctx kimi-box
-check "tenant context: the guard says whose host this is not" 0 "not a host you own" tctx claude-box
-check "tenant context: the guard cites box#80" 0 "box#80" tctx claude-box
-check "tenant context: the creds-free contract is stated" 0 "Creds-free by default" tctx claude-box
-check "tenant context: claude names /login as the operator's flow" 0 "/login" tctx claude-box
-check "tenant context: codex names its login flow" 0 "login flow (\`codex\`)" tctx codex-box
-check "tenant context: grok names its login flow" 0 "grok login" tctx grok-box
-check "tenant context: kimi names its login flow" 0 "Kimi Code OAuth" tctx kimi-box
-check "tenant context: staging renders nothing (no agent lives there)" 1 "" tctx staging-box
+# The same definition served from a REF (tarball fetch, curl stubbed — the
+# release.sh discipline) and from a local DIR must resolve to identical
+# converge inputs: the parsed TPL_* table and the rendered context file are
+# everything the mechanism consumes, so identical inputs ARE the identical
+# converge (#110's acceptance criterion, provable offline).
+TPL_WORK="$(mktemp -d)"
+mkdir -p "$TPL_WORK/bin" "$TPL_WORK/stage/rig-templates-testref"
+cp -r "$TPL_FIX"/. "$TPL_WORK/stage/rig-templates-testref/"
+tar -czf "$TPL_WORK/reg.tar.gz" -C "$TPL_WORK/stage" rig-templates-testref
+cat > "$TPL_WORK/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+# stub: invoked as `curl -fsSL <url> -o <out>` by templates_resolve
+echo "$2" >> "${CURL_LOG:?}"
+cp "${CURL_TARBALL:?}" "$4"
+CURLEOF
+chmod +x "$TPL_WORK/bin/curl"
+# Single quotes deliberate throughout (SC2016): the $-expressions expand in
+# the INNER bash, against the sourced lib's state, never in the harness.
+# shellcheck disable=SC2016
+tpl_inputs_script='set -euo pipefail
+  . "$1/commands/lib/templates.sh"
+  templates_resolve
+  template_parse_env "$REGISTRY_DIR/scratch-box/template.env"
+  printf "USER=%s|CTX=%s|CLI=%s|SRC=%s|PATH=%s|NODE=%s|APT=%s\n" \
+    "$TPL_USER" "$TPL_CONTEXT_PATH" "$TPL_CLI_NAME" "$TPL_CLI_SRC" \
+    "$TPL_PATH_LINE" "$TPL_NEEDS_NODE" "$TPL_APT_EXTRAS"
+  render_tenant_context scratch-box "$REGISTRY_DIR/scratch-box/creds.md"'
+tpl_from_dir() {   # tpl_from_dir <outfile> — the local-folder path
+  env RIG_TEMPLATES_DIR="$TPL_FIX" bash -c "$tpl_inputs_script" _ "$ROOT" > "$1"
+}
+tpl_from_ref() {   # tpl_from_ref <outfile> — the tarball path, curl stubbed
+  env PATH="$TPL_WORK/bin:$PATH" CURL_LOG="$TPL_WORK/curl.log" \
+      CURL_TARBALL="$TPL_WORK/reg.tar.gz" RIG_TEMPLATES_REF=testref \
+      bash -c "$tpl_inputs_script" _ "$ROOT" > "$1"
+}
+check "templates: a local DIR resolves and parses" 0 "" tpl_from_dir "$TPL_WORK/from-dir"
+check "templates: a REF resolves through the tarball fetch (stubbed curl)" 0 "" \
+  tpl_from_ref "$TPL_WORK/from-ref"
+check "templates: DIR and REF yield byte-identical converge inputs" 0 "" \
+  diff "$TPL_WORK/from-dir" "$TPL_WORK/from-ref"
+# The fetch's first candidate is refs/tags — a tag must outrank a branch that
+# happens to share its name (install.sh's own precedence, the pin must win).
+check "templates: the fetch asks refs/tags first" 0 "/archive/refs/tags/testref.tar.gz" \
+  head -n1 "$TPL_WORK/curl.log"
+check "templates: the rendered context carries the box#80 guard" 0 "box setup-host" \
+  cat "$TPL_WORK/from-dir"
+check "templates: the guard says whose host this is not" 0 "not a host you own" \
+  cat "$TPL_WORK/from-dir"
+check "templates: the guard cites box#80" 0 "box#80" cat "$TPL_WORK/from-dir"
+check "templates: the definition's creds paragraph is spliced in" 0 "The scratch vendor paragraph" \
+  cat "$TPL_WORK/from-dir"
+check "templates: the bootstrap runbook note survives the split" 0 "Bootstrap runbook" \
+  cat "$TPL_WORK/from-dir"
+# The default ref is the IN-TREE PIN (the BOX_RELEASE discipline, ruled on
+# #110: pinned, not main-tracked): exactly one greppable assignment, so a pin
+# bump is a one-line PR and the drill can read the pin from an installed tree.
+# shellcheck disable=SC2016
+check "templates: the pin is one greppable line" 0 "1" \
+  bash -c 'grep -c "^RIG_TEMPLATES_PIN=" "$1/commands/lib/templates.sh"' _ "$ROOT"
+# shellcheck disable=SC2016
+check "templates: unset knobs fall back to the pin" 0 "the in-tree pin" \
+  bash -c '. "$1/commands/lib/templates.sh" && templates_source_desc' _ "$ROOT"
+
+# rig template-lint — the registry repo's CI gate, same schema as the mint's
+# parser (rig defines validity; rig-templates CI enforces it on every PR).
+check "template-lint: --help exits 0" 0 "usage:" "$ROOT/commands/template-lint.sh" --help
+check "template-lint: a directory is required" 2 "role directory required" "$ROOT/commands/template-lint.sh"
+check "template-lint: dispatched from bin/rig" 0 "usage:" "$ROOT/bin/rig" template-lint --help
+check "template-lint: a valid definition passes" 0 "OK: " "$ROOT/commands/template-lint.sh" "$TPL_FIX/scratch-box"
+check "template-lint: an unknown key fails by name" 1 "unknown key: COLOR" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/badkey-box"
+check "template-lint: one bad definition fails the whole run" 1 "FAIL: " \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/scratch-box" "$TPL_FIX/badkey-box"
+mkdir -p "$TPL_FIX/plain"
+cp "$TPL_FIX/scratch-box"/* "$TPL_FIX/plain/"
+check "template-lint: a suffix-less role directory is refused (#76)" 1 "family suffix" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/plain"
+mkdir -p "$TPL_FIX/noinstall-box"
+cp "$TPL_FIX/scratch-box/template.env" "$TPL_FIX/scratch-box/creds.md" "$TPL_FIX/noinstall-box/"
+check "template-lint: a missing install.sh is refused by name" 1 "install.sh missing" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noinstall-box"
+mkdir -p "$TPL_FIX/blankcreds-box"
+cp "$TPL_FIX/scratch-box/template.env" "$TPL_FIX/scratch-box/install.sh" "$TPL_FIX/blankcreds-box/"
+printf '  \n\t\n' > "$TPL_FIX/blankcreds-box/creds.md"
+check "template-lint: a blank creds.md is refused by name" 1 "creds.md missing or blank" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/blankcreds-box"
+mkdir -p "$TPL_FIX/noshebang-box"
+cp "$TPL_FIX/scratch-box/template.env" "$TPL_FIX/scratch-box/creds.md" "$TPL_FIX/noshebang-box/"
+printf 'exit 0\n' > "$TPL_FIX/noshebang-box/install.sh"
+check "template-lint: an install.sh without a shebang is refused" 1 "no shebang" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noshebang-box"
+rm -rf "$TPL_FIX" "$TPL_WORK"
+
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
 # idiom): nothing in the tenant mechanism touches the tailnet, prompts, or
-# apt-installs incus. A grep that finds nothing (exit 1) is the pass.
+# apt-installs incus. A grep that finds nothing (exit 1) is the pass. The
+# same absences hold for the templates lib — it fetches DATA, unauthenticated
+# by contract, and must never grow a credential to do it.
 check "tenant: never touches the tailnet" 1 "" \
   grep -nE 'tailscale|TS_AUTHKEY' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: non-interactive — nothing prompts" 1 "" \
   grep -nE '\bread -r' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: never apt-installs incus (box owns the daemon)" 1 "" \
   grep -nE 'apt-get install.* incus' "$ROOT/commands/bootstrap-tenant.sh"
+check "templates lib: the fetch carries no credential" 1 "" \
+  grep -nE 'Authorization|gh api|GITHUB_TOKEN' "$ROOT/commands/lib/templates.sh"
+# The data file is PARSED, never executed: the parse loop reads lines, and
+# no source statement may ever reach template.env. Grep-pinned because the
+# failure is silent and total — a sourced template.env is arbitrary shell
+# running as root at every mint.
+check "templates lib: the parser READS template.env line by line" 0 "" \
+  grep -qF 'while IFS= read -r line' "$ROOT/commands/lib/templates.sh"
+check "templates lib: template.env is never sourced" 1 "" \
+  grep -nE '(source|^[[:space:]]*\.)[[:space:]]+[^#]*template\.env' "$ROOT/commands/lib/templates.sh" "$ROOT/commands/bootstrap-tenant.sh"
 # staging-box's posture rides the SAME hardening code as the machine roles — the
 # shared lib call is the anti-drift property, so pin the call, not the words.
 check "tenant: staging-box hardens through the shared sshd lib" 0 "" \
@@ -746,7 +900,6 @@ check "tenant: the marker write follows the context-file converge" \
 # shellcheck disable=SC2016
 check "tenant: the marker write is gated on the resolved root-door, not a spelling" 0 "" \
   grep -qxF 'if [ -z "$EXISTING_ROOT_DOOR" ]; then' "$ROOT/commands/bootstrap-tenant.sh"
-
 check "coolify: version required, exit 2"  2 "--version"      "$ROOT/commands/coolify-install.sh"
 check "coolify: --help exits 0"            0 "usage:"         "$ROOT/commands/coolify-install.sh" --help
 check "coolify: version needs value"       2 "needs a value"  "$ROOT/commands/coolify-install.sh" --version

@@ -37,15 +37,19 @@ commands:
       Leave the tailnet only when /etc/rig/role proves rig performed the
       join, then remove that marker. Refuses for pre-existing or old unknown
       joins, and while a GitHub runner is installed. Run as root.
-  bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box> [--user <name>]
+  bootstrap <role>-box [--user <name>]
       The box TENANT roles: converge a box-minted guest. The '-box' suffix
       names the family (a guest, vs the '-server' machine roles above).
-      claude-box|codex-box|grok-box|kimi-box land the agent toolbelt (git, gh, tmux, docker), the agent's CLI on
-      the system PATH, and the agent-context file (with the box#80 guard:
-      never run box setup-host inside a box). staging-box lands box#69's
-      server posture — docker + sshd hardening; its tailnet join stays
-      operator-run via 'rig bootstrap workload-server'. Creds-free and non-interactive: box
-      auto-runs these at mint. Run as root, inside the box.
+      The agent tenants (claude-box, codex-box, grok-box, kimi-box, …) are
+      DEFINED in the heavy-duty/rig-templates registry — resolved via
+      RIG_TEMPLATES_DIR > RIG_TEMPLATES_REF > the in-tree pin — and land
+      the agent toolbelt (git, gh, tmux, docker), the agent's CLI on the
+      system PATH, and the agent-context file (with the box#80 guard:
+      never run box setup-host inside a box). staging-box, in rig's own
+      tree, lands box#69's server posture — docker + sshd hardening; its
+      tailnet join stays operator-run via 'rig bootstrap workload-server'.
+      Creds-free and non-interactive: box auto-runs these at mint. Run as
+      root, inside the box.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
   coolify backup install [options]
@@ -95,6 +99,12 @@ commands:
       Shut root SSH on a class=human box once an admin key works. Refuses
       on class=server — root there is the control plane's automation door —
       and while no admin holds a key. Run as root.
+  template-lint <role-dir>...
+      Validate tenant-role definitions (the heavy-duty/rig-templates
+      shape): template.env against the allowlist (data, never sourced),
+      install.sh present with a shebang, creds.md non-blank. Every refusal
+      names the failing key. The registry repo's CI runs this on every PR;
+      no root, no network, no writes.
   manifest [<key>]
       Print /etc/rig/manifest — which rig converged this machine and when
       (bootstrapped_by/_at pin the FIRST convergence forever; converged_by/_at
@@ -454,6 +464,10 @@ case "$cmd" in
         exit 2
         ;;
     esac
+    ;;
+  template-lint)
+    shift
+    exec "$ROOT/commands/template-lint.sh" "$@"
     ;;
   manifest)
     shift
