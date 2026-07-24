@@ -3,8 +3,8 @@
 # from, parse a definition's template.env against an allowlist, and lint a
 # whole definition. Sourced by bootstrap-tenant.sh (the mint-time consumer)
 # and template-lint.sh (the registry repo's CI gate) — pure functions plus
-# one pin, no side effects at source time (repo precedent: tenant-config,
-# runner-config).
+# one pin, no side effects at source time (repo precedent: runner-config,
+# and the tenant-config table this lib replaces).
 #
 # The registry moved out of rig's tree so mechanism and data can move at
 # different cadences (#109 is the evidence: adding kimi — pure data — meant

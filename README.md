@@ -398,7 +398,7 @@ unattended VM-host appliance) — and `workstation` is the machine at the keyboa
 end of all the SSH connections: `root-door=closed`, `join=login`, entering the
 tailnet as *your* device rather than the fleet's.
 
-### `rig bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box>` — the box tenants
+### `rig bootstrap <role>-box` — the box tenants
 
 Run as root, **inside** a [box](https://github.com/heavy-duty/box)-minted
 guest. Convergent — safe to re-run; a second run changes nothing.
@@ -419,16 +419,41 @@ same harness as everything else — and re-runnable on an *existing* box to
 converge it to a new spec instead of re-minting it. One convergence engine;
 the guests were the hole.
 
-It is **one mechanism, parameterized per tenant** (`lib/tenant-config.sh`
-holds the whole per-tenant table), not four hand-maintained scripts:
+It is **one mechanism, parameterized per DEFINITION** (#110), not four
+hand-maintained scripts. The agent-tenant definitions live in the
+**[heavy-duty/rig-templates](https://github.com/heavy-duty/rig-templates)
+registry** — one directory per role (`template.env`, the allowlisted data
+table rig parses and never sources; `install.sh`, the CLI install; `creds.md`,
+the per-vendor context paragraph) — so adding an agent tenant is a data PR
+there, never a mechanism edit here (#109 was the evidence: adding kimi, pure
+data, meant editing six files in this repo). Which `-box` roles exist is the
+registry's fact; `rig bootstrap <anything>-box` dispatches on the family
+suffix and refuses an unknown role by listing what the resolved registry
+actually contains. `staging-box` is the one in-tree tenant — mechanism-adjacent
+(sshd hardening through the shared `lib/sshd.sh`, docker, no agent), user
+`ops`, box#69's server posture with `root-door=open` acceptance.
 
-| tenant role   | user     | what lands |
-|---------------|----------|------------|
-| `claude-box`  | `claude` | the agent toolbelt (git, gh, tmux, ripgrep, jq, age, unzip, build-essential), docker, node 22, the Claude Code CLI on the system PATH, zsh + oh-my-zsh, and `~/.claude/CLAUDE.md` |
-| `codex-box`   | `codex`  | the toolbelt, docker, node 22, `@openai/codex` on the system PATH, and `~/.codex/AGENTS.md` |
-| `grok-box`    | `grok`   | the toolbelt, docker, the grok CLI on the system PATH, and `~/.grok/AGENTS.md` |
-| `kimi-box`    | `kimi`   | the toolbelt, docker, the kimi CLI (uv-managed) on the system PATH, and `~/.kimi/AGENTS.md` |
-| `staging-box` | `ops`    | box#69's server posture: docker + the same sshd hardening the machine roles get (shared `lib/sshd.sh`, `root-door=open` acceptance) |
+**Where the registry comes from — three knobs, precedence high to low:**
+
+| knob | meaning |
+|------|---------|
+| `RIG_TEMPLATES_DIR` | a local folder — no fetch: the offline-test path, and "try a template before it exists anywhere" |
+| `RIG_TEMPLATES_REF` | any ref of `RIG_TEMPLATES_REPO` (default `heavy-duty/rig-templates`), fetched as an unauthenticated tarball at bootstrap time |
+| *(neither set)* | **the in-tree pin** — `RIG_TEMPLATES_PIN` in `commands/lib/templates.sh`, the `BOX_RELEASE` discipline: bumped by ordinary reviewed rig PR, so a rig release freezes the mechanism+registry pair, and a newer rig matches newer templates by default (the #110 ruling) |
+
+**The security trade — in bold, not a footnote.** **A main-tracked
+rig-templates repo means every merged PR there executes as root inside every
+future mint.** This is acceptable — and an improvement — only because of
+three facts together: (1) it *narrows* today's surface, where all of rig is
+main-tracked-as-root; (2) the repo is small, single-purpose, and
+ceremony-governed with a **human merge** as the gate and the review panel
+ahead of it; (3) drills pin the SHA they proved. If any of those three
+weakens, the default flips to a pinned `RIG_TEMPLATES_REF`. install.sh diffs
+in that repo are the highest-trust review surface in the org — the reviewer
+doctrine should say so. *(2026-07-24: the flip this paragraph reserves was
+taken, before the migration and by the decider — the default IS the pin
+above, so a merged template reaches mints only through a reviewed pin bump
+here, or an explicit per-mint `RIG_TEMPLATES_REF`.)*
 
 **The role carries the suffix; the user does not.** A tenant user is the
 account the box *seed* created (`BOX_USER`) and the agent CLI's own dotdir
@@ -462,8 +487,9 @@ disposability facts, and the guard note — **never run `box setup-host`,
 `box teardown-host`, or the drill inside a box; the box you are in is not a
 host you own**. A nested box stack claims the guest's own uplink subnet and
 silently breaks its networking (box#80). The note lives in
-`lib/tenant-config.sh` exactly once, not copy-pasted per template — that was
-the point of moving it here.
+`lib/templates.sh`'s renderer exactly once — mechanism, not template data —
+never copy-pasted per definition; that was the point of moving it here. Only
+the creds paragraph is the definition's (`creds.md`).
 
 **Tenants and the role marker.** A tenant run writes `role=<tenant> tenant=yes
 host=no` — no `root-door=`, because a guest has no root-door policy of its own

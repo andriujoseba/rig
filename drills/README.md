@@ -63,7 +63,11 @@ schedule, in separate sittings. What makes that safe is that every drill
 **pins the same fixed set of candidate refs**: rig's drill runs `--host yes`
 with `BOX_REF=release/<box-version>`, so it exercises the box that will
 actually ship; box's drill mints with `RIG_REF=release/<rig-version>`, so it
-exercises the rig that will actually ship. Both measure the same pair.
+exercises the rig that will actually ship. Both measure the same pair. The
+record also cites the **rig-templates SHA** the converge read (#110) — the
+candidate tree's `RIG_TEMPLATES_PIN` unless the drill was pointed elsewhere
+via `RIG_TEMPLATES_REF` — so the mechanism+registry pair a release freezes
+is the pair the drill proved.
 
 That — not sequencing — is what dissolves the box↔rig recursion. The refs are
 static identifiers that exist as soon as the release branches do, long before
