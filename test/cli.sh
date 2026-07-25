@@ -667,6 +667,97 @@ check "tenant: cron.service enabled assert is present" 0 "" \
   grep -qF "systemctl is-enabled cron" "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: cron.service active assert is present" 0 "" \
   grep -qF "systemctl is-active cron" "$ROOT/commands/bootstrap-tenant.sh"
+
+# The converge is exercised, not argued about (the drop_incus precedent):
+# converge_cron is lifted out of the real file verbatim — column-0
+# 'converge_cron() {' through column-0 '}' — and driven against a stub
+# systemctl whose effective state lives in files. The extraction is asserted
+# first: if that shape ever changes the lift comes back empty and every case
+# below fails loudly rather than passing vacuously.
+CRON_FN="$(sed -n '/^converge_cron() {/,/^}/p' "$ROOT/commands/bootstrap-tenant.sh")"
+# shellcheck disable=SC2016  # $1 is the inner bash -c's positional, deliberately
+check "tenant: converge_cron lifts out of the real file whole" 0 "" \
+  bash -c '[ -n "$1" ] && printf %s "$1" | grep -q "^}$"' _ "$CRON_FN"
+# ...and the function must actually be CALLED — a lifted-and-driven function
+# nobody invokes proves nothing about bootstrap.
+check "tenant: converge_cron is invoked" 0 "" \
+  grep -qE '^ *converge_cron$' "$ROOT/commands/bootstrap-tenant.sh"
+
+CRON_BASH="$(command -v bash)"
+# drive_cron <noop|converge|masked|deadstart> — the real converge_cron against
+# a stub systemctl. Effective state is files: 'enabled'/'active' existing means
+# the probe passes. 'noop': both preexist — the idempotent re-run. 'converge':
+# neither, and enable/start take effect. 'masked': neither, and enable/start do
+# NOTHING — the unrecoverably-inert daemon #162 is about. 'deadstart': enabled,
+# but start never takes. The stub logs its calls to a file: the real call sites
+# are '>/dev/null 2>&1', so a stub that spoke on either stream would be
+# silenced and the call assertions below would pass vacuously.
+drive_cron() {
+  local mode="$1" d
+  d="$(mktemp -d)"
+  mkdir -p "$d/bin"
+  case "$mode" in noop) : > "$d/enabled"; : > "$d/active" ;; deadstart) : > "$d/enabled" ;; esac
+  # The stub restores a real PATH for itself: the caller's PATH is REPLACED by
+  # the stub dir (that is what keeps a host systemctl out of reach), which
+  # would otherwise leave the stub unable to find 'echo' as an executable.
+  cat > "$d/bin/systemctl" <<EOF
+#!/bin/sh
+PATH=/usr/bin:/bin
+echo "systemctl \$*" >> "$d/calls"
+case "\$1" in
+  is-enabled) [ -e "$d/enabled" ] ;;
+  is-active)  [ -e "$d/active" ] ;;
+  enable) case "$mode" in noop|converge) : > "$d/enabled" ;; esac ;;
+  start)  case "$mode" in noop|converge) : > "$d/active" ;; esac ;;
+esac
+EOF
+  chmod +x "$d/bin/systemctl"
+  # The driving shell mirrors the real script: same set flags, same log/die.
+  # shellcheck disable=SC2016  # $*/$1/$2 resolve inside the driving shell
+  PATH="$d/bin" "$CRON_BASH" -c '
+    set -euo pipefail
+    log() { printf "rig-bootstrap: %s\n" "$*"; }
+    die() { printf "rig-bootstrap: ERROR: %s\n" "$1" >&2; exit "${2:-1}"; }
+    '"$CRON_FN"'
+    converge_cron' 2>&1
+  echo "RC=$?"
+  cat "$d/calls" 2>/dev/null
+  rm -rf "$d"
+}
+CRON_NOOP="$(drive_cron noop)"
+CRON_CONV="$(drive_cron converge)"
+CRON_MASK="$(drive_cron masked)"
+CRON_DEAD="$(drive_cron deadstart)"
+cron_has() { printf '%s' "$1" | grep -qF -e "$2"; }   # cron_has <captured> <substr>
+
+# The idempotent re-run: both probes already pass, NOTHING is converged and
+# nothing dies — a second bootstrap must not touch the unit.
+check "converge_cron: already enabled+active exits 0" 0 "" cron_has "$CRON_NOOP" "RC=0"
+check "converge_cron: the no-op never calls unmask" 1 "" cron_has "$CRON_NOOP" "systemctl unmask"
+check "converge_cron: the no-op never calls enable" 1 "" cron_has "$CRON_NOOP" "systemctl enable"
+check "converge_cron: the no-op never calls start" 1 "" cron_has "$CRON_NOOP" "systemctl start"
+# The converge path: a disabled, stopped unit is unmasked, enabled, started —
+# and the asserts then pass on systemd's own answer, exit 0.
+check "converge_cron: disabled+inactive converges, exits 0" 0 "" cron_has "$CRON_CONV" "RC=0"
+check "converge_cron: the converge unmasks" 0 "" cron_has "$CRON_CONV" "systemctl unmask cron"
+check "converge_cron: the converge enables" 0 "" cron_has "$CRON_CONV" "systemctl enable cron"
+check "converge_cron: the converge starts" 0 "" cron_has "$CRON_CONV" "systemctl start cron"
+# The log states the probe fact, never a success it did not verify.
+check "converge_cron: the log states the probe fact" 0 "" \
+  cron_has "$CRON_CONV" "cron.service not enabled — converging"
+# THE #162 FAILURE: a converge that does not take effect DIES, nonzero, naming
+# cron — never a silent success wrapping an inert timer.
+check "converge_cron: an unrecoverable unit dies nonzero" 0 "" cron_has "$CRON_MASK" "RC=1"
+check "converge_cron: the death names the enabled assert" 0 "" \
+  cron_has "$CRON_MASK" "cron.service is not enabled after converge"
+check "converge_cron: the death cites #162" 0 "" cron_has "$CRON_MASK" "#162"
+check "converge_cron: the dying path tried to converge first" 0 "" \
+  cron_has "$CRON_MASK" "systemctl unmask cron"
+# Enabled but the start never takes: the ACTIVE assert dies — enabled alone
+# is not an armed timer.
+check "converge_cron: enabled-but-dead start dies nonzero" 0 "" cron_has "$CRON_DEAD" "RC=1"
+check "converge_cron: that death names the active assert" 0 "" \
+  cron_has "$CRON_DEAD" "cron.service is not active after converge"
 # The machine-role traits die with the tenant story, never "unknown flag" — an
 # operator coming from the machine families needs the boundary, not a shrug.
 check "tenant: trait flags die with the tenant story" 2 "have no traits" \

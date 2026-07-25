@@ -233,6 +233,27 @@ append_line_once() {
   chown "$TENANT_USER:$TENANT_GROUP" "$file"
 }
 
+# The binary on PATH is not the effective state — an image can ship crontab
+# with cron.service masked or stopped, and an unarmed timer is exactly the
+# silent-inert box #162 is about. Converge best-effort, then assert what
+# systemd actually reports; the assert is the authority. Enabling an
+# already-enabled unit is a no-op and no path here touches any crontab.
+# A function so test/cli.sh can lift it verbatim and drive it against a
+# stubbed systemctl, the drop_incus precedent.
+converge_cron() {
+  if ! systemctl is-enabled cron >/dev/null 2>&1; then
+    log "cron.service not enabled — converging"
+    systemctl unmask cron >/dev/null 2>&1 || true
+    systemctl enable cron >/dev/null 2>&1 || true
+  fi
+  if ! systemctl is-active cron >/dev/null 2>&1; then
+    log "cron.service not active — starting"
+    systemctl start cron >/dev/null 2>&1 || true
+  fi
+  systemctl is-enabled cron >/dev/null 2>&1 || die "cron.service is not enabled after converge — the duty engine's timer never fires without it (#162)"
+  systemctl is-active  cron >/dev/null 2>&1 || die "cron.service is not active after converge — the duty engine's timer never fires without it (#162)"
+}
+
 # --- packages ----------------------------------------------------------------
 export DEBIAN_FRONTEND=noninteractive
 log "installing base packages (tenant ${ROLE})"
@@ -260,23 +281,8 @@ if [ "$ROLE" != "staging-box" ]; then
   command -v gh  >/dev/null 2>&1 || die "gh missing after package install"
   command -v git >/dev/null 2>&1 || die "git missing after package install"
   command -v crontab >/dev/null 2>&1 || die "crontab missing after package install — the duty engine arms itself with cron (#162)"
-  # The binary on PATH is not the effective state — an image can ship crontab
-  # with cron.service masked or stopped, and an unarmed timer is exactly the
-  # silent-inert box #162 is about. Converge best-effort, then assert what
-  # systemd actually reports; the assert is the authority. Enabling an
-  # already-enabled unit is a no-op and no path here touches any crontab.
   # staging-box is exempt with the rest of this block: no agent, no engine.
-  if ! systemctl is-enabled cron >/dev/null 2>&1; then
-    systemctl unmask cron >/dev/null 2>&1 || true
-    systemctl enable cron >/dev/null 2>&1 || true
-    log "enabled cron.service"
-  fi
-  if ! systemctl is-active cron >/dev/null 2>&1; then
-    systemctl start cron >/dev/null 2>&1 || true
-    log "started cron.service"
-  fi
-  systemctl is-enabled cron >/dev/null 2>&1 || die "cron.service is not enabled after converge — the duty engine's timer never fires without it (#162)"
-  systemctl is-active  cron >/dev/null 2>&1 || die "cron.service is not active after converge — the duty engine's timer never fires without it (#162)"
+  converge_cron
 fi
 
 # --- docker ------------------------------------------------------------------
