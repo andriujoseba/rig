@@ -144,7 +144,8 @@ case "$ROLE" in
     templates_resolve || exit 2
     trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
     MACHINE_TEMPLATE_DIR="$REGISTRY_DIR/$ROLE"
-    if [ "$(template_family "$ROLE" 2>/dev/null || true)" != "machine" ] \
+    if { [ "$ROLE" != "workstation" ] && [[ ! "$ROLE" =~ ^[a-z][a-z0-9-]*-server$ ]]; } \
+      || [ "$(template_family "$ROLE" 2>/dev/null || true)" != "machine" ] \
       || [ ! -f "$MACHINE_TEMPLATE_DIR/template.env" ]; then
       MACHINE_ROLES="$(templates_machine_roles "$REGISTRY_DIR" | paste -sd'|' -)"
       [ -n "$MACHINE_ROLES" ] || MACHINE_ROLES="none"

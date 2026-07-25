@@ -613,6 +613,25 @@ mkdir -p "$TPL_FIX/badnode-box"
 printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nNEEDS_NODE="maybe"\n' > "$TPL_FIX/badnode-box/template.env"
 mkdir -p "$TPL_FIX/badapt-box"
 printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nAPT_EXTRAS="zsh -o"\n' > "$TPL_FIX/badapt-box/template.env"
+mkdir -p "$TPL_FIX/scratch-server"
+printf 'ROOT_DOOR="closed"\nHOST="no"\nJOIN="login"\n' > "$TPL_FIX/scratch-server/template.env"
+mkdir -p "$TPL_FIX/workstation"
+printf 'ROOT_DOOR="closed"\nHOST="yes"\nJOIN="login"\n' > "$TPL_FIX/workstation/template.env"
+mkdir -p "$TPL_FIX/hooked-server"
+printf 'ROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$TPL_FIX/hooked-server/template.env"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TPL_FIX/hooked-server/install.sh"
+mkdir -p "$TPL_FIX/baddoor-server"
+printf 'ROOT_DOOR="ajar"\nHOST="no"\nJOIN="authkey"\n' > "$TPL_FIX/baddoor-server/template.env"
+mkdir -p "$TPL_FIX/tenantkeys-server"
+cp "$TPL_FIX/scratch-box/template.env" "$TPL_FIX/tenantkeys-server/template.env"
+mkdir -p "$TPL_FIX/machinekeys-box"
+cp "$TPL_FIX/scratch-server/template.env" "$TPL_FIX/machinekeys-box/template.env"
+mkdir -p "$TPL_FIX/creds-server"
+cp "$TPL_FIX/scratch-server/template.env" "$TPL_FIX/creds-server/template.env"
+printf 'not used\n' > "$TPL_FIX/creds-server/creds.md"
+mkdir -p "$TPL_FIX/noshebang-server"
+cp "$TPL_FIX/scratch-server/template.env" "$TPL_FIX/noshebang-server/template.env"
+printf 'exit 0\n' > "$TPL_FIX/noshebang-server/install.sh"
 
 # THE HARD CUT, tenant half (#76). The pre-rename names are gone and must fail
 # as UNKNOWN — asserted per name, because an alias left in for one tenant is the
@@ -652,6 +671,28 @@ check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "Box TENANT role
   "$ROOT/commands/bootstrap.sh" claude-box --help
 check "bootstrap: an unheard-of '-box' role still dispatches (zero code changes)" 0 "Box TENANT roles" \
   "$ROOT/commands/bootstrap.sh" scratch-box --help
+
+# Machine roles use the same resolved registry but remain table-compatible:
+# loading happens before flag parsing, so an explicit flag overrides the
+# definition exactly as it overrides a built-in row.
+check "machine template: traits load from the local registry" 2 "join=login" \
+  env RIG_TEMPLATES_DIR="$TPL_FIX" TS_AUTHKEY=x \
+  "$ROOT/commands/bootstrap.sh" scratch-server --no-users
+if [ "$(id -u)" -ne 0 ]; then
+  check "machine template: a flag overrides the loaded trait" 1 "must run as root" \
+    env RIG_TEMPLATES_DIR="$TPL_FIX" TS_AUTHKEY=x \
+    "$ROOT/commands/bootstrap.sh" scratch-server --no-users --join authkey
+fi
+check "machine template: invalid ROOT_DOOR is refused by key" 2 "ROOT_DOOR" \
+  env RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap.sh" baddoor-server --no-users
+check "machine template: unknown role lists machine definitions" 2 "scratch-server" \
+  env RIG_TEMPLATES_DIR="$TPL_FIX" "$ROOT/commands/bootstrap.sh" absent-server
+check "machine template: unknown role names the resolved source" 2 "RIG_TEMPLATES_DIR" \
+  env RIG_TEMPLATES_DIR="$TPL_FIX" "$ROOT/commands/bootstrap.sh" absent-server
+check "machine template: a registry role cannot shadow a built-in" 2 "unset TS_AUTHKEY" \
+  env RIG_TEMPLATES_DIR="$TPL_FIX" TS_AUTHKEY=x \
+  "$ROOT/commands/bootstrap.sh" workstation --no-users
 
 # The tenant marker guard (#83), against marker FIXTURES (never the harness
 # machine's real /etc/rig/role): converging a tenant onto a machine-role box or a
@@ -844,6 +885,30 @@ cp "$TPL_FIX/scratch-box/template.env" "$TPL_FIX/scratch-box/creds.md" "$TPL_FIX
 printf 'exit 0\n' > "$TPL_FIX/noshebang-box/install.sh"
 check "template-lint: an install.sh without a shebang is refused" 1 "no shebang" \
   "$ROOT/commands/template-lint.sh" "$TPL_FIX/noshebang-box"
+check "template-lint: a traits-only machine definition passes" 0 "OK: " \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/scratch-server"
+check "template-lint: workstation is the machine-family carve-out" 0 "OK: " \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/workstation"
+check "template-lint: machine roles refuse tenant keys" 1 "unknown key: USER" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/tenantkeys-server"
+check "template-lint: tenant roles refuse machine keys" 1 "unknown key: ROOT_DOOR" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/machinekeys-box"
+check "template-lint: machine roles refuse creds.md" 1 "creds.md is not allowed" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/creds-server"
+check "template-lint: machine install.sh requires a shebang" 1 "no shebang" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noshebang-server"
+# The install is deliberately after the users phase and its wrapper names both
+# role and source. Dynamic execution belongs to the root integration path; the
+# non-root offline harness pins the safety ordering and failure contract.
+machine_hook_at="$(grep -n 'running install hook for' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+check "machine template: install hook is bootstrap's last convergence phase" 0 "" \
+  test "${users_apply_at:-999999}" -lt "${machine_hook_at:-0}"
+# shellcheck disable=SC2016
+check "machine template: install failure names role and source" 0 "" \
+  grep -qF 'install hook failed for role $ROLE from $(templates_source_desc)' "$ROOT/commands/bootstrap.sh"
+# shellcheck disable=SC2016
+check "machine template: install runs from its definition with RIG_ROLE" 0 "" \
+  grep -qF 'cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" ./install.sh' "$ROOT/commands/bootstrap.sh"
 rm -rf "$TPL_FIX" "$TPL_WORK"
 
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal

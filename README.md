@@ -401,6 +401,34 @@ unattended VM-host appliance) — and `workstation` is the machine at the keyboa
 end of all the SSH connections: `root-door=closed`, `join=login`, entering the
 tailnet as *your* device rather than the fleet's.
 
+### Machine-role templates
+
+Machine presets can also live in the
+[heavy-duty/rig-templates](https://github.com/heavy-duty/rig-templates)
+registry. A `*-server` directory is a fleet-machine definition; the exact
+name `workstation` is the deliberate suffix-less exception. Its
+`template.env` contains exactly the three traits bootstrap's built-in table
+uses:
+
+```dotenv
+ROOT_DOOR="open"    # open|closed
+HOST="no"           # yes|no
+JOIN="authkey"      # authkey|login
+```
+
+An `install.sh` is optional. When present, bootstrap runs it as root,
+non-interactively, from the definition directory with `RIG_ROLE` set, after
+the tailnet join, host setup, role marker prerequisites, and operator
+convergence. A nonzero exit fails bootstrap and names the role and registry
+source. The definition owns idempotence, just as bootstrap does.
+
+Built-in roles and `custom` take precedence over registry names. Any other
+non-tenant role is looked up in the resolved registry; the same three source
+knobs below apply, including `RIG_TEMPLATES_DIR` for an offline local
+definition. Pin reviewed registry content into rig's tree before using it on
+fleet machines: an optional machine `install.sh` executes as root on metal,
+and an override is the operator explicitly choosing a different trust root.
+
 ### `rig bootstrap <role>-box` — the box tenants
 
 Run as root, **inside** a [box](https://github.com/heavy-duty/box)-minted
