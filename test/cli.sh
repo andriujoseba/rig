@@ -2654,6 +2654,19 @@ check "help lists the versioned verbs" 0 "uninstall" "$ROOT/bin/rig" --help
 WORK="$(mktemp -d)"
 FAKEHOME="$WORK/home"; mkdir -p "$FAKEHOME"
 
+# Every real installer run gets a deterministic registry archive. The curl
+# shim can also be poisoned per call to prove warn-and-continue behavior.
+SNAPBIN="$WORK/snapshot-bin"
+mkdir -p "$SNAPBIN" "$WORK/snapshot-stage/rig-templates-pin/scratch-box"
+printf 'USER="scratch"\n' > "$WORK/snapshot-stage/rig-templates-pin/scratch-box/template.env"
+tar -czf "$WORK/snapshot.tar.gz" -C "$WORK/snapshot-stage" rig-templates-pin
+cat > "$SNAPBIN/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+[ -z "${SNAPSHOT_FETCH_FAIL:-}" ] || exit 22
+cp "${SNAPSHOT_TARBALL:?}" "$4"
+CURLEOF
+chmod +x "$SNAPBIN/curl"
+
 # A fabricated "newer release": the same CLI, a different VERSION — what an
 # upgrade actually is, from the installer's point of view.
 SRC9="$WORK/src-9.9.9"; mkdir -p "$SRC9/bin"
@@ -2665,7 +2678,8 @@ echo "8.8.8-drill" > "$SRC8/VERSION"
 
 inst() {  # inst <rig_home> <rig_bin> [VAR=val ...] — run install.sh for real
   local h="$1" b="$2"; shift 2
-  env HOME="$FAKEHOME" RIG_ROLE_MARKER="$WORK/no-marker" \
+  env HOME="$FAKEHOME" PATH="$SNAPBIN:$PATH" \
+      SNAPSHOT_TARBALL="$WORK/snapshot.tar.gz" RIG_ROLE_MARKER="$WORK/no-marker" \
       RIG_HOME="$h" RIG_BIN="$b" \
       RIG_INSTALL_SOURCE="$ROOT" "$@" bash "$ROOT/install.sh"
 }
@@ -2681,6 +2695,16 @@ check "install: 'current' points at versions/<v>" 0 "versions/$VER" readlink "$H
 check "install: the PATH symlink rides the chain" 0 "$H1/current/bin/rig" readlink "$B1/rig"
 check "install: rig --version answers through the whole chain" 0 "rig $VER" irig "$B1/rig" --version
 check "install: INSTALLED_FROM records the local source" 0 "local:" cat "$H1/versions/$VER/INSTALLED_FROM"
+check "install: the pinned registry snapshot lands inside the version tree" 0 "" \
+  test -f "$H1/versions/$VER/templates@$TPL_PIN/scratch-box/template.env"
+
+HFAIL="$WORK/h-failed-snapshot"; BFAIL="$WORK/b-failed-snapshot"
+check "install: unreachable registry warns and still installs rig" 0 "WARNING: could not fetch template registry snapshot" \
+  inst "$HFAIL" "$BFAIL" SNAPSHOT_FETCH_FAIL=1
+check "install: failed snapshot fetch leaves a working tree" 0 "rig $VER" \
+  "$BFAIL/rig" --version
+check "install: failed snapshot fetch leaves no hollow snapshot" 1 "" \
+  test -e "$HFAIL/versions/$VER/templates@$TPL_PIN"
 
 # --- rig#39: no $HOME in the environment (cloud-init's runcmd) ---------------
 # The box#88 seed runs install.sh from runcmd, which carries NO $HOME; under
@@ -2703,10 +2727,13 @@ check "install: no \$HOME and no getent answer refuses by name" 1 "set HOME and 
 
 # --- converge, don't clobber ------------------------------------------------
 touch "$H1/versions/$VER/CANARY"
+touch "$H1/versions/$VER/templates@$TPL_PIN/STALE"
 check "install: a same-version re-run is a no-op that says so" 0 "already installed" inst "$H1" "$B1"
 check "install: the no-op left the tree untouched" 0 "" test -e "$H1/versions/$VER/CANARY"
 check "install: RIG_REINSTALL=1 replaces that version's tree" 0 "reinstalled" inst "$H1" "$B1" RIG_REINSTALL=1
 check "install: the reinstall really replaced it (canary gone)" 1 "" test -e "$H1/versions/$VER/CANARY"
+check "install: reinstall replaces the registry snapshot" 1 "" \
+  test -e "$H1/versions/$VER/templates@$TPL_PIN/STALE"
 
 # --- a second version: side-by-side, and the flip ---------------------------
 check "install: a second version installs side-by-side" 0 "" inst "$H1" "$B1" RIG_INSTALL_SOURCE="$SRC9"

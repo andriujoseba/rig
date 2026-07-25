@@ -249,6 +249,57 @@ set_exec() {   # $1 = a rig tree: the executable bits install.sh owns
   fi
 }
 
+# snapshot_templates <rig-tree> — best-effort install-time cache of the exact
+# registry pin carried by that tree. The pin remains the sole source of truth;
+# the directory name makes a stale snapshot invisible after an upgrade.
+# Failure is deliberately a warning: rig itself is still a complete install,
+# and templates_resolve preserves the live-fetch fallback.
+snapshot_templates() {
+  local tree="$1" pin repo url got="" unpack top snapshot
+  pin="$(sed -n 's/^RIG_TEMPLATES_PIN=//p' "$tree/commands/lib/templates.sh" 2>/dev/null | head -n1 || true)"
+  if [ -z "$pin" ]; then
+    warn "installed tree carries no RIG_TEMPLATES_PIN; template registry snapshot skipped."
+    return 0
+  fi
+  repo="${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}"
+  snapshot="$tree/templates@$pin"
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl is unavailable; template registry snapshot $repo@$pin was not installed (converge will retry the live fetch)."
+    return 0
+  fi
+  unpack="$TMPDIR/templates-unpack"
+  rm -rf "$unpack"
+  mkdir -p "$unpack"
+  log "downloading template registry snapshot $repo@$pin"
+  for url in \
+    "https://github.com/$repo/archive/refs/tags/$pin.tar.gz" \
+    "https://github.com/$repo/archive/refs/heads/$pin.tar.gz" \
+    "https://github.com/$repo/archive/$pin.tar.gz"; do
+    if curl -fsSL "$url" -o "$TMPDIR/templates.tar.gz" 2>/dev/null; then got="$url"; break; fi
+  done
+  if [ -z "$got" ]; then
+    warn "could not fetch template registry snapshot $repo@$pin; rig installed without it (converge will retry the live fetch)."
+    return 0
+  fi
+  if ! tar -xzf "$TMPDIR/templates.tar.gz" -C "$unpack"; then
+    warn "could not extract template registry snapshot from $got; rig installed without it (converge will retry the live fetch)."
+    return 0
+  fi
+  set -- "$unpack"/*/
+  if ! { [ $# -eq 1 ] && [ -d "$1" ]; }; then
+    warn "template registry snapshot from $got has an unexpected archive shape; rig installed without it (converge will retry the live fetch)."
+    return 0
+  fi
+  top="${1%/}"
+  if [ -z "$(find "$top" -mindepth 2 -maxdepth 2 -type f -name template.env -print -quit 2>/dev/null)" ]; then
+    warn "template registry snapshot from $got has no definitions; rig installed without it (converge will retry the live fetch)."
+    return 0
+  fi
+  rm -rf "$snapshot"
+  mv "$top" "$snapshot"
+  log "template registry snapshot installed: $repo@$pin"
+}
+
 # --- install into $DEST/versions/<version> -----------------------------------
 VDIR="$DEST/versions/$new_ver"
 newly_installed=0
@@ -259,6 +310,7 @@ if [ -d "$VDIR" ]; then
     log "RIG_REINSTALL=1 — replacing the installed $new_ver tree"
     stage="$VDIR.new.$$"; old="$VDIR.old.$$"
     rm -rf "$stage" "$old"
+    snapshot_templates "$EXTRACTED"
     set_exec "$EXTRACTED"
     mv "$EXTRACTED" "$stage"
     # Swap by renames, delete LAST: rm-then-move leaves a hole the whole
@@ -276,6 +328,7 @@ if [ -d "$VDIR" ]; then
 else
   log "installing $new_ver into $VDIR"
   mkdir -p "$DEST/versions"
+  snapshot_templates "$EXTRACTED"
   set_exec "$EXTRACTED"
   mv "$EXTRACTED" "$VDIR"
   newly_installed=1

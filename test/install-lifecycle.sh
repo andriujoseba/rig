@@ -65,6 +65,18 @@ VER="$(cat "$ROOT/VERSION")"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# install.sh snapshots the pinned registry even for the local source channel.
+# Serve a deterministic archive so this lifecycle remains fully offline.
+SNAPBIN="$WORK/snapshot-bin"
+mkdir -p "$SNAPBIN" "$WORK/snapshot-stage/rig-templates-pin/test-box"
+printf 'USER="test"\n' > "$WORK/snapshot-stage/rig-templates-pin/test-box/template.env"
+tar -czf "$WORK/snapshot.tar.gz" -C "$WORK/snapshot-stage" rig-templates-pin
+cat > "$SNAPBIN/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+cp "${SNAPSHOT_TARBALL:?}" "$4"
+CURLEOF
+chmod +x "$SNAPBIN/curl"
+
 # tree_state <root> — what "changed nothing" must mean: every file's bytes,
 # every path's type and mode, every symlink's target. Beat 3 captures this
 # before and after the re-run and diffs the two.
@@ -124,7 +136,10 @@ check "honesty: a really-gone path passes the absence assert" 0 "" \
 # RIG_INSTALL_SOURCE is the supported local channel (its contract — dir,
 # tarball, loud refusal, no silent download fallback — is test/release.sh's);
 # in CI $ROOT is $GITHUB_WORKSPACE, so what lands is the code under review.
-b1() { RIG_INSTALL_SOURCE="$ROOT" bash "$ROOT/install.sh"; }
+b1() {
+  PATH="$SNAPBIN:$PATH" SNAPSHOT_TARBALL="$WORK/snapshot.tar.gz" \
+    RIG_INSTALL_SOURCE="$ROOT" bash "$ROOT/install.sh"
+}
 check "beat 1: install.sh installs this checkout" 0 "done" b1
 
 # --- beat 2: assert what landed ----------------------------------------------
@@ -140,6 +155,9 @@ check "beat 2: rig --version answers through the whole chain" 0 "rig $VER" \
   "$BINDIR/rig" --version
 check "beat 2: INSTALLED_FROM names the local source" 0 "local:$ROOT" \
   cat "$DEST/versions/$VER/INSTALLED_FROM"
+TPL_PIN="$(sed -n 's/^RIG_TEMPLATES_PIN=//p' "$ROOT/commands/lib/templates.sh")"
+check "beat 2: pinned registry snapshot landed in the version tree" 0 "" \
+  test -f "$DEST/versions/$VER/templates@$TPL_PIN/test-box/template.env"
 
 # --- beat 3: the converging re-run -------------------------------------------
 # "Ran twice without crashing" is the self-deception this beat exists to
