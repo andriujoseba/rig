@@ -1253,6 +1253,7 @@ tags_empty() { # tags_empty <file> — exit 0 iff the reader prints NOTHING
 }
 FIX_TAGGED="$(mktemp)"    # Self carries two tags; a peer carries a third
 FIX_UNTAGGED="$(mktemp)"  # Self has no Tags key at all — the untagged hazard
+FIX_NESTED="$(mktemp)"    # tagged Self carrying a nested Location object
 cat > "$FIX_TAGGED" <<'JSON'
 {
   "BackendState": "Running",
@@ -1273,23 +1274,77 @@ cat > "$FIX_TAGGED" <<'JSON'
   }
 }
 JSON
+# The peers are the point (#160): an untagged Self OMITS its Tags key (Go
+# omitempty), and the old document-global reader then fell through into Peer and
+# returned tag:server here. Every real tailnet has this shape — untagged Self
+# next to tagged peers — which the peerless fixture this replaces never covered.
 cat > "$FIX_UNTAGGED" <<'JSON'
 {
   "BackendState": "Running",
   "Self": {
     "HostName": "user-owned-box"
+  },
+  "Peer": {
+    "nodekey:aaa": {
+      "HostName": "coolify-box",
+      "Tags": [
+        "tag:server"
+      ]
+    },
+    "nodekey:bbb": {
+      "HostName": "ci-box",
+      "Tags": [
+        "tag:ci"
+      ]
+    }
+  }
+}
+JSON
+# Location is a nested object INSIDE Self (a pointer with omitempty in the real
+# netmap): a reader that sliced Self to the next key would end early at its
+# closing brace and drop the Tags that follow — the brace counter must not.
+cat > "$FIX_NESTED" <<'JSON'
+{
+  "BackendState": "Running",
+  "Self": {
+    "HostName": "coolify-box",
+    "Location": {
+      "Country": "Croatia",
+      "CountryCode": "HR"
+    },
+    "Tags": [
+      "tag:server",
+      "tag:prod"
+    ]
+  },
+  "Peer": {
+    "nodekey:abc": {
+      "HostName": "ci-box",
+      "Tags": [
+        "tag:ci"
+      ]
+    }
   }
 }
 JSON
 check "json_string_array: reads the first array element" 0 "tag:ci"    tags "$FIX_TAGGED"
 check "json_string_array: reads a later array element"   0 "tag:build" tags "$FIX_TAGGED"
-# Self precedes Peer in the netmap, so the FIRST "Tags" is the node's own: exactly
-# two elements read proves the peer's tag:server did not leak into Self's tags.
+# The reader is scoped to the Self object: exactly two elements read proves the
+# peer's tag:server did not leak into Self's tags.
 check "json_string_array: reads Self's array, not a peer's" 0 "2" tags_count "$FIX_TAGGED"
 # An absent key omits itself (Go omitempty), never emits []: empty is the signal
 # bootstrap turns into a hard untagged-key refusal, so it must read as empty here.
 check "json_string_array: absent Tags key prints nothing" 0 "" tags_empty "$FIX_UNTAGGED"
-rm -f "$FIX_TAGGED" "$FIX_UNTAGGED"
+# Regression, #160: with tagged peers present, an untagged Self must STILL read
+# empty — pre-fix this returned the peer's tag:server, false-refusing every
+# login join and false-verifying untagged authkey joins as tagged.
+check "json_string_array: untagged Self + tagged peers reads empty (#160)" \
+  0 "" tags_empty "$FIX_UNTAGGED"
+check "json_string_array: nested Location does not truncate Self's tags" \
+  0 "2" tags_count "$FIX_NESTED"
+check "json_string_array: reads past a nested object to a later element" \
+  0 "tag:prod" tags "$FIX_NESTED"
+rm -f "$FIX_TAGGED" "$FIX_UNTAGGED" "$FIX_NESTED"
 
 # The guard is only worth something if it runs BEFORE the box is touched: the
 # token prompt, the download, configure and svc.sh start all come after it.
