@@ -12,6 +12,8 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$HERE/lib/users-config.sh"    # parse_users_file — the --users PRE-FLIGHT only
 # shellcheck source=SCRIPTDIR/lib/manifest.sh
 . "$HERE/lib/manifest.sh"        # manifest_stamp — provenance, written beside the marker
+# shellcheck source=SCRIPTDIR/lib/templates.sh
+. "$HERE/lib/templates.sh"       # registry-backed machine-role definitions
 # The users lib is sourced for validation, never for convergence: `users apply`
 # stays the single owner of what a users file DOES to a box (#51). Bootstrap
 # borrows the parser so a typo'd users file is caught in the same breath as a
@@ -119,6 +121,7 @@ EOF
 
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
+MACHINE_TEMPLATE_DIR=""
 case "$ROLE" in
   --undo)
     shift
@@ -136,7 +139,19 @@ case "$ROLE" in
     exec "$HERE/bootstrap-tenant.sh" "$@" ;;
   -h|--help) usage; exit 0 ;;
   "") usage >&2; die "role required (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a '-box' tenant role from the template registry, e.g. claude-box)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a '-box' tenant role from the template registry, e.g. claude-box)" 2 ;;
+  *)
+    shift
+    templates_resolve || exit 2
+    trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
+    MACHINE_TEMPLATE_DIR="$REGISTRY_DIR/$ROLE"
+    if [ "$(template_family "$ROLE" 2>/dev/null || true)" != "machine" ] \
+      || [ ! -f "$MACHINE_TEMPLATE_DIR/template.env" ]; then
+      MACHINE_ROLES="$(templates_machine_roles "$REGISTRY_DIR" | paste -sd'|' -)"
+      [ -n "$MACHINE_ROLES" ] || MACHINE_ROLES="none"
+      die "unknown role: $ROLE (want control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom; machine roles from $(templates_source_desc): $MACHINE_ROLES; or a '-box' tenant role)" 2
+    fi
+    machine_template_parse_env "$MACHINE_TEMPLATE_DIR/template.env" \
+      || die "invalid machine role $ROLE from $(templates_source_desc)" 2 ;;
 esac
 
 # Role→traits map — the single place a role's shape is declared (issue #26).
@@ -156,6 +171,7 @@ case "$ROLE" in
   dev-server)           ROOT_DOOR=closed HOST=yes JOIN=authkey ;;
   workstation)          ROOT_DOOR=closed HOST=yes JOIN=login   ;;
   custom)        ;;
+  *) ROOT_DOOR="$TPL_ROOT_DOOR" HOST="$TPL_HOST" JOIN="$TPL_JOIN" ;;
 esac
 
 # custom has no hostname default: a made-up name on a made-up shape helps nobody.
@@ -782,6 +798,17 @@ fi
 if [ -n "$USERS_FILE" ]; then
   log "converging operators from ${USERS_FILE} (rig users apply)"
   "$HERE/users-apply.sh" --file "$USERS_FILE"
+fi
+
+# A registry machine's optional install is the final convergence phase: after
+# join, host setup, the marker prerequisites, and operators. It inherits the
+# caller environment, adds only the selected role, and runs from its definition
+# directory. Definitions own idempotence, like bootstrap itself.
+if [ -n "$MACHINE_TEMPLATE_DIR" ] && [ -e "$MACHINE_TEMPLATE_DIR/install.sh" ]; then
+  log "running install hook for ${ROLE} from $(templates_source_desc)"
+  if ! (cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" ./install.sh); then
+    die "install hook failed for role $ROLE from $(templates_source_desc)"
+  fi
 fi
 
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
