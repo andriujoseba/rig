@@ -15,7 +15,10 @@ takes arguments, does its work, and stores no credential, ever.
 ## Install
 
 ```sh
+# the development tree this README documents:
 curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | RIG_REF=main bash
+# the latest release:
+curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
 ```
 
 This README tracks `main`, so the quick start installs that same development
