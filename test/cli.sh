@@ -854,6 +854,45 @@ check "templates: the pin is one greppable line" 0 "1" \
 check "templates: unset knobs fall back to the pin" 0 "the in-tree pin" \
   bash -c '. "$1/commands/lib/templates.sh" && templates_source_desc' _ "$ROOT"
 
+# The installed snapshot is found relative to templates.sh itself, so exercise
+# it in a copied rig tree: no fixture-only path knob can accidentally make the
+# production precedence pass. Poisoned curl makes any network attempt fatal.
+mkdir -p "$TPL_WORK/rig/commands/lib"
+cp "$ROOT/commands/lib/templates.sh" "$TPL_WORK/rig/commands/lib/templates.sh"
+TPL_PIN="$(sed -n 's/^RIG_TEMPLATES_PIN=//p' "$ROOT/commands/lib/templates.sh")"
+cp -r "$TPL_FIX" "$TPL_WORK/rig/templates@$TPL_PIN"
+cat > "$TPL_WORK/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+echo "poisoned curl: snapshot resolution attempted network I/O" >&2
+exit 99
+CURLEOF
+chmod +x "$TPL_WORK/bin/curl"
+# shellcheck disable=SC2016
+snapshot_resolve='set -euo pipefail
+  . "$1/commands/lib/templates.sh"
+  templates_resolve
+  printf "%s\n%s\n" "$REGISTRY_DIR" "$(templates_source_desc)"'
+check "templates: matching snapshot resolves with poisoned curl" 0 "(snapshot)" \
+  env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+
+# A stale directory and an empty current directory are both unusable. The
+# poisoned fetch exit is folded into templates_resolve's normal loud refusal;
+# the important assertion is that neither path answers as the registry.
+mv "$TPL_WORK/rig/templates@$TPL_PIN" "$TPL_WORK/rig/templates@stale-pin"
+mkdir "$TPL_WORK/rig/templates@$TPL_PIN"
+check "templates: empty matching snapshot falls back to fetch" 1 "cannot fetch" \
+  env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+rm -rf "$TPL_WORK/rig/templates@$TPL_PIN"
+check "templates: stale snapshot is ignored" 1 "cannot fetch" \
+  env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+
+# An explicit ref always means a live fetch, even when the matching snapshot
+# exists: restore it and prove the poison is reached.
+mv "$TPL_WORK/rig/templates@stale-pin" "$TPL_WORK/rig/templates@$TPL_PIN"
+check "templates: explicit REF never reads the snapshot" 1 "cannot fetch" \
+  env PATH="$TPL_WORK/bin:$PATH" RIG_TEMPLATES_REF=operator-ref \
+  bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+
 # rig template-lint — the registry repo's CI gate, same schema as the mint's
 # parser (rig defines validity; rig-templates CI enforces it on every PR).
 check "template-lint: --help exits 0" 0 "usage:" "$ROOT/commands/template-lint.sh" --help
