@@ -655,6 +655,18 @@ check "tenant: a crafted role name dies at the charset gate" 2 "invalid tenant r
   "$ROOT/commands/bootstrap-tenant.sh" 'UPPER-box'
 check "tenant: dockerd effective-state assert is present" 0 "" \
   grep -qF "docker info" "$ROOT/commands/bootstrap-tenant.sh"
+# The #162 contract, both halves: cron installs with the agent toolbelt (the
+# duty engine's unprivileged installer can never apt-get it), and PATH is not
+# the effective state — the service must be asserted enabled AND active, or a
+# masked daemon leaves every tenant crontab silently inert.
+check "tenant: cron rides the agent toolbelt install" 0 "" \
+  grep -qE '^ *apt-get install .* cron ' "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: crontab toolbelt assert is present" 0 "" \
+  grep -qF "command -v crontab" "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: cron.service enabled assert is present" 0 "" \
+  grep -qF "systemctl is-enabled cron" "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: cron.service active assert is present" 0 "" \
+  grep -qF "systemctl is-active cron" "$ROOT/commands/bootstrap-tenant.sh"
 # The machine-role traits die with the tenant story, never "unknown flag" — an
 # operator coming from the machine families needs the boundary, not a shrug.
 check "tenant: trait flags die with the tenant story" 2 "have no traits" \

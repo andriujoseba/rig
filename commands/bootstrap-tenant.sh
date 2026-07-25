@@ -246,8 +246,11 @@ else
   # The shared agent toolbelt the templates carried, plus the definition's
   # APT_EXTRAS (claude-box's zsh rides there). Unquoted on purpose — it is a
   # word list, every word already vetted by the parser's package-name gate.
+  # cron is toolbelt, not a template flavour: every agent tenant exists to
+  # run the cron-driven duty engine, whose unprivileged installer can detect
+  # a missing cron but never apt-get it (#162).
   # shellcheck disable=SC2086
-  apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential $TPL_APT_EXTRAS
+  apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential cron $TPL_APT_EXTRAS
 fi
 # Assert the effective toolbelt, not apt's exit code — tmux is the box#65
 # contract ('box tmux' runs tmux new-session inside every box) and gh is how
@@ -256,6 +259,24 @@ command -v tmux >/dev/null 2>&1 || die "tmux missing after package install — '
 if [ "$ROLE" != "staging-box" ]; then
   command -v gh  >/dev/null 2>&1 || die "gh missing after package install"
   command -v git >/dev/null 2>&1 || die "git missing after package install"
+  command -v crontab >/dev/null 2>&1 || die "crontab missing after package install — the duty engine arms itself with cron (#162)"
+  # The binary on PATH is not the effective state — an image can ship crontab
+  # with cron.service masked or stopped, and an unarmed timer is exactly the
+  # silent-inert box #162 is about. Converge best-effort, then assert what
+  # systemd actually reports; the assert is the authority. Enabling an
+  # already-enabled unit is a no-op and no path here touches any crontab.
+  # staging-box is exempt with the rest of this block: no agent, no engine.
+  if ! systemctl is-enabled cron >/dev/null 2>&1; then
+    systemctl unmask cron >/dev/null 2>&1 || true
+    systemctl enable cron >/dev/null 2>&1 || true
+    log "enabled cron.service"
+  fi
+  if ! systemctl is-active cron >/dev/null 2>&1; then
+    systemctl start cron >/dev/null 2>&1 || true
+    log "started cron.service"
+  fi
+  systemctl is-enabled cron >/dev/null 2>&1 || die "cron.service is not enabled after converge — the duty engine's timer never fires without it (#162)"
+  systemctl is-active  cron >/dev/null 2>&1 || die "cron.service is not active after converge — the duty engine's timer never fires without it (#162)"
 fi
 
 # --- docker ------------------------------------------------------------------
