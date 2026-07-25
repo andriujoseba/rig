@@ -144,7 +144,7 @@ case "$ROLE" in
     templates_resolve || exit 2
     trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
     MACHINE_TEMPLATE_DIR="$REGISTRY_DIR/$ROLE"
-    if { [ "$ROLE" != "workstation" ] && [[ ! "$ROLE" =~ ^[a-z][a-z0-9-]*-server$ ]]; } \
+    if [[ ! "$ROLE" =~ ^[a-z][a-z0-9-]*-server$ ]] \
       || [ "$(template_family "$ROLE" 2>/dev/null || true)" != "machine" ] \
       || [ ! -f "$MACHINE_TEMPLATE_DIR/template.env" ]; then
       MACHINE_ROLES="$(templates_machine_roles "$REGISTRY_DIR" | paste -sd'|' -)"
@@ -807,7 +807,7 @@ fi
 # directory. Definitions own idempotence, like bootstrap itself.
 if [ -n "$MACHINE_TEMPLATE_DIR" ] && [ -e "$MACHINE_TEMPLATE_DIR/install.sh" ]; then
   log "running install hook for ${ROLE} from $(templates_source_desc)"
-  if ! (cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" ./install.sh); then
+  if ! (cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" bash ./install.sh); then
     die "install hook failed for role $ROLE from $(templates_source_desc)"
   fi
 fi

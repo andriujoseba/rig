@@ -616,10 +616,7 @@ printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nAPT_EXTRA
 mkdir -p "$TPL_FIX/scratch-server"
 printf 'ROOT_DOOR="closed"\nHOST="no"\nJOIN="login"\n' > "$TPL_FIX/scratch-server/template.env"
 mkdir -p "$TPL_FIX/workstation"
-printf 'ROOT_DOOR="closed"\nHOST="yes"\nJOIN="login"\n' > "$TPL_FIX/workstation/template.env"
-mkdir -p "$TPL_FIX/hooked-server"
-printf 'ROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$TPL_FIX/hooked-server/template.env"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$TPL_FIX/hooked-server/install.sh"
+printf 'ROOT_DOOR="closed"\nHOST="yes"\nJOIN="authkey"\n' > "$TPL_FIX/workstation/template.env"
 mkdir -p "$TPL_FIX/baddoor-server"
 printf 'ROOT_DOOR="ajar"\nHOST="no"\nJOIN="authkey"\n' > "$TPL_FIX/baddoor-server/template.env"
 mkdir -p "$TPL_FIX/tenantkeys-server"
@@ -908,7 +905,7 @@ check "machine template: install failure names role and source" 0 "" \
   grep -qF 'install hook failed for role $ROLE from $(templates_source_desc)' "$ROOT/commands/bootstrap.sh"
 # shellcheck disable=SC2016
 check "machine template: install runs from its definition with RIG_ROLE" 0 "" \
-  grep -qF 'cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" ./install.sh' "$ROOT/commands/bootstrap.sh"
+  grep -qF 'cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" bash ./install.sh' "$ROOT/commands/bootstrap.sh"
 rm -rf "$TPL_FIX" "$TPL_WORK"
 
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
