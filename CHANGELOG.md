@@ -12,6 +12,8 @@ on the way to cutting its first release, and this file starts there.
 - Platform, drill, docs and labels changes receive dedicated scope labels (#119)
 - The `changelog-armed` guard returns, version-keyed (#112, ceremony#13)
 - The `.ceremony/` doctrine mirror, verified by `docs-sync` on every PR (#112, ceremony#19)
+- `rig template-lint` validates role definitions; rig-templates CI runs it on every PR (#110)
+- Drill records cite the rig-templates SHA the converge read (#110)
 - `kimi-box` joins the box tenant roles — the Kimi CLI agent guest (#109)
 - CI drills the install lifecycle against a real tree — install from the checkout, converge to an empty diff, uninstall to proven absence (#106)
 - `drill/drill.sh` — the drill has an instrument: pinned-ref assertion, a mechanical idempotence diff, and a `drills/<version>.md` record emitter (#105)
@@ -22,10 +24,12 @@ on the way to cutting its first release, and this file starts there.
 
 - Changelog entries land in per-issue fragments assembled by the release PR (#136)
 - Release and labels machinery is consumed from heavy-duty/ceremony@0.1.0 by reference — the workflows shrink to caller stubs, the guard scripts and their tests move upstream (#112, ceremony#13)
+- Agent-tenant definitions live in heavy-duty/rig-templates, pinned in-tree and overridable per mint (`RIG_TEMPLATES_DIR`/`_REF`/`_REPO`); the in-tree case arms are gone, `staging-box` stays (#110)
 - `bootstrap --host yes` installs a pinned box release instead of `main` (#103)
 
 ### Fixed
 
+- The quick-start fence names its channel and carries the release command beside it (#149)
 - The drill's docs no longer claim both installers default to `main` — box installs the `BOX_RELEASE` pin, rig the latest release, and its `--box-ref` example is now a tag (#133)
 - `kimi-bot-andresmgsl` is on the review panel — the roster predated it joining the bench (#120)
 
