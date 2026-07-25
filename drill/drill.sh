@@ -277,7 +277,7 @@ emit_record() {
       "${RIG_SHA:-unresolved}" "$REF" "${BOX_SHA:-unresolved}" "$BOXREF"
     printf 'Template registry: %s@%s (ref %s, %s) — the rig-templates source the converge read (#110/#153).\n' \
       "${TPLREPO:-heavy-duty/rig-templates}" "${TPL_SHA:-unresolved}" \
-      "${TPLREF:-unresolved}" "$TPL_SOURCE"
+      "${TPLREF:-unresolved}" "${TPL_SOURCE:-fetched}"
     printf 'Instrument: drill/drill.sh, legs in execution order.\n\n'
     printf '| Leg | Result |\n'
     printf '| --- | --- |\n'
