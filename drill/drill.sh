@@ -59,6 +59,7 @@ BOXREF="${BOX_REF:-}"
 TPLREPO="${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}"
 TPLREF="${RIG_TEMPLATES_REF:-}"
 TPL_SHA=""
+TPL_SOURCE="fetched"
 ROLE=staging-server
 USERS_FILE="${DRILL_USERS_FILE:-}"
 RUN_ID="${DRILL_RUN_ID:-drill-$(date -u +%F)}"
@@ -274,8 +275,9 @@ emit_record() {
     printf 'Run ID: %s. Host: %s, %s vCPU / %s GB RAM (%s).\n' "$RUN_ID" "${os:-unknown}" "$cpus" "$ram" "$virt"
     printf 'Candidate refs: rig@%s (RIG_REF=%s), box@%s (BOX_REF=%s).\n' \
       "${RIG_SHA:-unresolved}" "$REF" "${BOX_SHA:-unresolved}" "$BOXREF"
-    printf 'Template registry: %s@%s (ref %s) — the rig-templates the converge read (#110).\n' \
-      "${TPLREPO:-heavy-duty/rig-templates}" "${TPL_SHA:-unresolved}" "${TPLREF:-unresolved}"
+    printf 'Template registry: %s@%s (ref %s, %s) — the rig-templates source the converge read (#110/#153).\n' \
+      "${TPLREPO:-heavy-duty/rig-templates}" "${TPL_SHA:-unresolved}" \
+      "${TPLREF:-unresolved}" "${TPL_SOURCE:-fetched}"
     printf 'Instrument: drill/drill.sh, legs in execution order.\n\n'
     printf '| Leg | Result |\n'
     printf '| --- | --- |\n'
@@ -396,13 +398,17 @@ ok "installed tree confirms: $REPO@$REF (version $DRILL_VERSION)"
 # through ref_sha like the two candidates above.
 if [ -z "$TPLREF" ]; then
   TPLREF="$(sed -n 's/^RIG_TEMPLATES_PIN=//p' "$RIG_TREE/commands/lib/templates.sh" 2>/dev/null | head -n1)"
+  if [ -n "$TPLREF" ] &&
+     [ -n "$(find "$RIG_TREE/templates@$TPLREF" -mindepth 2 -maxdepth 2 -type f -name template.env -print -quit 2>/dev/null)" ]; then
+    TPL_SOURCE="snapshot"
+  fi
 fi
 if [[ "$TPLREF" =~ ^[0-9a-f]{40}$ ]]; then
   TPL_SHA="${TPLREF:0:7}"
 elif [ -n "$TPLREF" ]; then
   TPL_SHA="$(ref_sha "$TPLREPO" "$TPLREF")"
 fi
-inf "templates: $TPLREPO@${TPLREF:-unresolved} (${TPL_SHA:-unresolved})"
+inf "templates: $TPLREPO@${TPLREF:-unresolved} (${TPL_SHA:-unresolved}, $TPL_SOURCE)"
 [ -n "$RECORD" ] || RECORD="$ROOT/drills/$DRILL_VERSION.md"
 
 # =============================================================================

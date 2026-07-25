@@ -18,7 +18,8 @@
 #   <role>/creds.md       the per-vendor creds-free paragraph the context
 #                         renderer splices in
 #
-# THE SOURCE IS THREE KNOBS, precedence _DIR > _REF > pin:
+# THE SOURCE IS THREE KNOBS plus the installed pin snapshot, precedence
+# _DIR > _REF > snapshot > pin fetch:
 #   RIG_TEMPLATES_DIR    a local folder — bypasses the fetch entirely (the
 #                        offline-test path, and "try a template before it
 #                        exists anywhere")
@@ -26,7 +27,8 @@
 #                        bootstrap time (the same shape as the rig preinstall)
 #   RIG_TEMPLATES_REPO   which repo that ref lives in (default
 #                        heavy-duty/rig-templates)
-# and, absent both overrides, the PIN below.
+# and, absent both overrides, the snapshot installed beside this file when it
+# matches the PIN below, then a live fetch of that pin as the fallback.
 
 # The default registry ref a mint converges — the BOX_RELEASE discipline
 # (#103): one line, bumped deliberately by ordinary rig PR after review, so a
@@ -51,6 +53,10 @@ MACHINE_KEYS_REQUIRED=(ROOT_DOOR HOST JOIN)
 templates_source_desc() {
   if [ -n "${RIG_TEMPLATES_DIR:-}" ]; then
     printf 'local dir %s (RIG_TEMPLATES_DIR)' "$RIG_TEMPLATES_DIR"
+  elif [ -z "${RIG_TEMPLATES_REF:-}" ] && templates_snapshot_usable; then
+    printf '%s@%s (snapshot)' \
+      "${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}" \
+      "$RIG_TEMPLATES_PIN"
   else
     printf '%s@%s%s' \
       "${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}" \
@@ -59,7 +65,26 @@ templates_source_desc() {
   fi
 }
 
-# templates_resolve — resolve the three knobs to a LOCAL directory holding
+# The snapshot path is derived from this library's installed tree. Its
+# pin-bearing directory name is the staleness guard: an older snapshot is
+# invisible after a pin bump. A usable registry has at least one definition;
+# an empty directory means an interrupted extraction and falls through to the
+# same live fetch as an absent snapshot.
+templates_snapshot_dir() {
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  printf '%s/templates@%s' "$(cd "$lib_dir/../.." && pwd)" "$RIG_TEMPLATES_PIN"
+}
+
+templates_snapshot_usable() {
+  local snapshot role_env
+  snapshot="$(templates_snapshot_dir)"
+  [ -d "$snapshot" ] || return 1
+  role_env="$(find "$snapshot" -mindepth 2 -maxdepth 2 -type f -name template.env -print -quit 2>/dev/null)"
+  [ -n "$role_env" ]
+}
+
+# templates_resolve — resolve the knobs to a LOCAL directory holding
 # the registry, left in the REGISTRY_DIR global (a global, not stdout: a
 # $(…) call site would run the fetch in a subshell and lose TEMPLATES_TMP,
 # the path the caller's cleanup trap must rm). RIG_TEMPLATES_DIR wins and is
@@ -81,6 +106,10 @@ templates_resolve() {
       return 1
     }
     REGISTRY_DIR="$RIG_TEMPLATES_DIR"
+    return 0
+  fi
+  if [ -z "${RIG_TEMPLATES_REF:-}" ] && templates_snapshot_usable; then
+    REGISTRY_DIR="$(templates_snapshot_dir)"
     return 0
   fi
   repo="${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}"

@@ -464,13 +464,20 @@ actually contains. `staging-box` is the one in-tree tenant — mechanism-adjacen
 (sshd hardening through the shared `lib/sshd.sh`, docker, no agent), user
 `ops`, box#69's server posture with `root-door=open` acceptance.
 
-**Where the registry comes from — three knobs, precedence high to low:**
+**Where the registry comes from — precedence high to low:**
 
 | knob | meaning |
 |------|---------|
 | `RIG_TEMPLATES_DIR` | a local folder — no fetch: the offline-test path, and "try a template before it exists anywhere" |
 | `RIG_TEMPLATES_REF` | any ref of `RIG_TEMPLATES_REPO` (default `heavy-duty/rig-templates`), fetched as an unauthenticated tarball at bootstrap time |
-| *(neither set)* | **the in-tree pin** — `RIG_TEMPLATES_PIN` in `commands/lib/templates.sh`, the `BOX_RELEASE` discipline: bumped by ordinary reviewed rig PR, so a rig release freezes the mechanism+registry pair, and a newer rig matches newer templates by default (the #110 ruling) |
+| *(neither set; matching snapshot installed)* | **the installed pin snapshot** — `install.sh` best-effort fetches `RIG_TEMPLATES_PIN` once into `templates@<pin-sha>/` inside the versioned rig tree; default converges read it with zero registry network I/O |
+| *(snapshot absent, empty, or stale)* | **live fetch of the in-tree pin** — the pre-snapshot fallback: `RIG_TEMPLATES_PIN` in `commands/lib/templates.sh` is fetched at converge time. A failed snapshot download only warns during install, so rig remains usable and retries here |
+
+The pin remains the only source of truth. An older `templates@<sha>/`
+directory cannot answer after a pin bump, and an explicit
+`RIG_TEMPLATES_REF` always fetches that ref rather than consulting the
+snapshot. Logs mark the installed path as `(snapshot)` so drill evidence
+records which source actually served the converge.
 
 **The security trade — in bold, not a footnote.** **A main-tracked
 rig-templates repo means every merged PR there executes as root inside every

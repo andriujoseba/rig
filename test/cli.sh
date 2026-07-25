@@ -854,6 +854,45 @@ check "templates: the pin is one greppable line" 0 "1" \
 check "templates: unset knobs fall back to the pin" 0 "the in-tree pin" \
   bash -c '. "$1/commands/lib/templates.sh" && templates_source_desc' _ "$ROOT"
 
+# The installed snapshot is found relative to templates.sh itself, so exercise
+# it in a copied rig tree: no fixture-only path knob can accidentally make the
+# production precedence pass. Poisoned curl makes any network attempt fatal.
+mkdir -p "$TPL_WORK/rig/commands/lib"
+cp "$ROOT/commands/lib/templates.sh" "$TPL_WORK/rig/commands/lib/templates.sh"
+TPL_PIN="$(sed -n 's/^RIG_TEMPLATES_PIN=//p' "$ROOT/commands/lib/templates.sh")"
+cp -r "$TPL_FIX" "$TPL_WORK/rig/templates@$TPL_PIN"
+cat > "$TPL_WORK/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+echo "poisoned curl: snapshot resolution attempted network I/O" >&2
+exit 99
+CURLEOF
+chmod +x "$TPL_WORK/bin/curl"
+# shellcheck disable=SC2016
+snapshot_resolve='set -euo pipefail
+  . "$1/commands/lib/templates.sh"
+  templates_resolve
+  printf "%s\n%s\n" "$REGISTRY_DIR" "$(templates_source_desc)"'
+check "templates: matching snapshot resolves with poisoned curl" 0 "(snapshot)" \
+  env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+
+# A stale directory and an empty current directory are both unusable. The
+# poisoned fetch exit is folded into templates_resolve's normal loud refusal;
+# the important assertion is that neither path answers as the registry.
+mv "$TPL_WORK/rig/templates@$TPL_PIN" "$TPL_WORK/rig/templates@stale-pin"
+mkdir "$TPL_WORK/rig/templates@$TPL_PIN"
+check "templates: empty matching snapshot falls back to fetch" 1 "cannot fetch" \
+  env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+rm -rf "$TPL_WORK/rig/templates@$TPL_PIN"
+check "templates: stale snapshot is ignored" 1 "cannot fetch" \
+  env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+
+# An explicit ref always means a live fetch, even when the matching snapshot
+# exists: restore it and prove the poison is reached.
+mv "$TPL_WORK/rig/templates@stale-pin" "$TPL_WORK/rig/templates@$TPL_PIN"
+check "templates: explicit REF never reads the snapshot" 1 "cannot fetch" \
+  env PATH="$TPL_WORK/bin:$PATH" RIG_TEMPLATES_REF=operator-ref \
+  bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+
 # rig template-lint — the registry repo's CI gate, same schema as the mint's
 # parser (rig defines validity; rig-templates CI enforces it on every PR).
 check "template-lint: --help exits 0" 0 "usage:" "$ROOT/commands/template-lint.sh" --help
@@ -2615,6 +2654,19 @@ check "help lists the versioned verbs" 0 "uninstall" "$ROOT/bin/rig" --help
 WORK="$(mktemp -d)"
 FAKEHOME="$WORK/home"; mkdir -p "$FAKEHOME"
 
+# Every real installer run gets a deterministic registry archive. The curl
+# shim can also be poisoned per call to prove warn-and-continue behavior.
+SNAPBIN="$WORK/snapshot-bin"
+mkdir -p "$SNAPBIN" "$WORK/snapshot-stage/rig-templates-pin/scratch-box"
+printf 'USER="scratch"\n' > "$WORK/snapshot-stage/rig-templates-pin/scratch-box/template.env"
+tar -czf "$WORK/snapshot.tar.gz" -C "$WORK/snapshot-stage" rig-templates-pin
+cat > "$SNAPBIN/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+[ -z "${SNAPSHOT_FETCH_FAIL:-}" ] || exit 22
+cp "${SNAPSHOT_TARBALL:?}" "$4"
+CURLEOF
+chmod +x "$SNAPBIN/curl"
+
 # A fabricated "newer release": the same CLI, a different VERSION — what an
 # upgrade actually is, from the installer's point of view.
 SRC9="$WORK/src-9.9.9"; mkdir -p "$SRC9/bin"
@@ -2626,7 +2678,8 @@ echo "8.8.8-drill" > "$SRC8/VERSION"
 
 inst() {  # inst <rig_home> <rig_bin> [VAR=val ...] — run install.sh for real
   local h="$1" b="$2"; shift 2
-  env HOME="$FAKEHOME" RIG_ROLE_MARKER="$WORK/no-marker" \
+  env HOME="$FAKEHOME" PATH="$SNAPBIN:$PATH" \
+      SNAPSHOT_TARBALL="$WORK/snapshot.tar.gz" RIG_ROLE_MARKER="$WORK/no-marker" \
       RIG_HOME="$h" RIG_BIN="$b" \
       RIG_INSTALL_SOURCE="$ROOT" "$@" bash "$ROOT/install.sh"
 }
@@ -2642,6 +2695,16 @@ check "install: 'current' points at versions/<v>" 0 "versions/$VER" readlink "$H
 check "install: the PATH symlink rides the chain" 0 "$H1/current/bin/rig" readlink "$B1/rig"
 check "install: rig --version answers through the whole chain" 0 "rig $VER" irig "$B1/rig" --version
 check "install: INSTALLED_FROM records the local source" 0 "local:" cat "$H1/versions/$VER/INSTALLED_FROM"
+check "install: the pinned registry snapshot lands inside the version tree" 0 "" \
+  test -f "$H1/versions/$VER/templates@$TPL_PIN/scratch-box/template.env"
+
+HFAIL="$WORK/h-failed-snapshot"; BFAIL="$WORK/b-failed-snapshot"
+check "install: unreachable registry warns and still installs rig" 0 "WARNING: could not fetch template registry snapshot" \
+  inst "$HFAIL" "$BFAIL" SNAPSHOT_FETCH_FAIL=1
+check "install: failed snapshot fetch leaves a working tree" 0 "rig $VER" \
+  "$BFAIL/rig" --version
+check "install: failed snapshot fetch leaves no hollow snapshot" 1 "" \
+  test -e "$HFAIL/versions/$VER/templates@$TPL_PIN"
 
 # --- rig#39: no $HOME in the environment (cloud-init's runcmd) ---------------
 # The box#88 seed runs install.sh from runcmd, which carries NO $HOME; under
@@ -2664,10 +2727,13 @@ check "install: no \$HOME and no getent answer refuses by name" 1 "set HOME and 
 
 # --- converge, don't clobber ------------------------------------------------
 touch "$H1/versions/$VER/CANARY"
+touch "$H1/versions/$VER/templates@$TPL_PIN/STALE"
 check "install: a same-version re-run is a no-op that says so" 0 "already installed" inst "$H1" "$B1"
 check "install: the no-op left the tree untouched" 0 "" test -e "$H1/versions/$VER/CANARY"
 check "install: RIG_REINSTALL=1 replaces that version's tree" 0 "reinstalled" inst "$H1" "$B1" RIG_REINSTALL=1
 check "install: the reinstall really replaced it (canary gone)" 1 "" test -e "$H1/versions/$VER/CANARY"
+check "install: reinstall replaces the registry snapshot" 1 "" \
+  test -e "$H1/versions/$VER/templates@$TPL_PIN/STALE"
 
 # --- a second version: side-by-side, and the flip ---------------------------
 check "install: a second version installs side-by-side" 0 "" inst "$H1" "$B1" RIG_INSTALL_SOURCE="$SRC9"
