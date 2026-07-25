@@ -43,6 +43,7 @@ RIG_TEMPLATES_PIN=be749f7fd1ff8dd7c2359bbce7fd6abd3f403eb0
 # KEY="value" — nothing else. Parsed by regex, never sourced.
 TEMPLATE_KEYS_REQUIRED=(USER CONTEXT_PATH CLI_NAME PATH_LINE)
 TEMPLATE_KEYS_OPTIONAL=(CLI_SRC NEEDS_NODE APT_EXTRAS)
+MACHINE_KEYS_REQUIRED=(ROOT_DOOR HOST JOIN)
 
 # templates_source_desc — where the resolved registry came from, for error
 # messages and logs: a misconfigured RIG_TEMPLATES_REPO must be visible in
@@ -128,6 +129,26 @@ templates_roles() {
   done
 }
 
+# template_family <role> — directory names are the registry's family tag.
+# workstation is the one intentional suffix-less machine role (#152 / epic D5).
+template_family() {
+  case "$1" in
+    *-box) printf 'tenant\n' ;;
+    *-server|workstation) printf 'machine\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+# templates_machine_roles <registry-dir> — only machine definitions, for the
+# machine bootstrap's unknown-role refusal.
+templates_machine_roles() {
+  local role
+  while IFS= read -r role; do
+    [ "$(template_family "$role" 2>/dev/null || true)" = "machine" ] || continue
+    printf '%s\n' "$role"
+  done < <(templates_roles "$1")
+}
+
 # template_parse_env <template.env> — parse against the allowlist. Sets
 # TPL_USER, TPL_CONTEXT_PATH, TPL_CLI_NAME, TPL_CLI_SRC, TPL_PATH_LINE,
 # TPL_NEEDS_NODE (default no), TPL_APT_EXTRAS. Every refusal names the
@@ -206,6 +227,62 @@ template_parse_env() {
   done
 }
 
+# machine_template_parse_env <template.env> — the fleet-machine traits schema.
+# The globals match bootstrap's table columns so a definition becomes a table
+# row without changing any downstream trait behavior.
+# shellcheck disable=SC2034
+machine_template_parse_env() {
+  local file="$1" line key val n=0 seen=" " k ok
+  TPL_ROOT_DOOR="" TPL_HOST="" TPL_JOIN=""
+  [ -f "$file" ] || { printf 'template.env missing: %s\n' "$file" >&2; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n+1))
+    case "$line" in ''|'#'*) continue ;; esac
+    if [[ ! "$line" =~ ^([A-Z_]+)=\"(.*)\"$ ]]; then
+      printf 'template.env:%d: not KEY="value": %s\n' "$n" "$line" >&2
+      return 1
+    fi
+    key="${BASH_REMATCH[1]}" val="${BASH_REMATCH[2]}"
+    ok=""
+    for k in "${MACHINE_KEYS_REQUIRED[@]}"; do
+      [ "$key" = "$k" ] && ok=1
+    done
+    [ -n "$ok" ] || {
+      printf 'template.env:%d: unknown key: %s (allowed: %s)\n' \
+        "$n" "$key" "${MACHINE_KEYS_REQUIRED[*]}" >&2
+      return 1
+    }
+    case "$seen" in *" $key "*)
+      printf 'template.env:%d: duplicate key: %s\n' "$n" "$key" >&2
+      return 1 ;;
+    esac
+    seen="$seen$key "
+    case "$key" in
+      ROOT_DOOR) TPL_ROOT_DOOR="$val" ;;
+      HOST)      TPL_HOST="$val" ;;
+      JOIN)      TPL_JOIN="$val" ;;
+    esac
+  done < "$file"
+  for k in "${MACHINE_KEYS_REQUIRED[@]}"; do
+    case "$seen" in *" $k "*) ;; *)
+      printf 'template.env: missing required key: %s\n' "$k" >&2
+      return 1 ;;
+    esac
+  done
+  case "$TPL_ROOT_DOOR" in
+    open|closed) ;;
+    *) printf 'template.env: ROOT_DOOR: want open or closed, got: %s\n' "$TPL_ROOT_DOOR" >&2; return 1 ;;
+  esac
+  case "$TPL_HOST" in
+    yes|no) ;;
+    *) printf 'template.env: HOST: want yes or no, got: %s\n' "$TPL_HOST" >&2; return 1 ;;
+  esac
+  case "$TPL_JOIN" in
+    authkey|login) ;;
+    *) printf 'template.env: JOIN: want authkey or login, got: %s\n' "$TPL_JOIN" >&2; return 1 ;;
+  esac
+}
+
 # render_tenant_context <role> <creds.md> — the agent-context file's
 # content, on stdout: the one file every agent reads before touching
 # anything. The skeleton is MECHANISM and lives here once — the box#80 guard
@@ -248,19 +325,32 @@ EOF
 # protects the registry, the mint-time parse protects a mint served through
 # RIG_TEMPLATES_REPO/_DIR that CI never saw.
 template_lint() {
-  local dir="${1%/}" role
+  local dir="${1%/}" role family
   role="$(basename "$dir")"
   [ -d "$dir" ] || { printf '%s: not a directory\n' "$dir" >&2; return 1; }
-  case "$role" in
-    *-box|*-server) ;;
-    *) printf '%s: role directories carry a family suffix (-box for box tenants, -server for fleet machines — rig#76)\n' "$role" >&2; return 1 ;;
-  esac
-  template_parse_env "$dir/template.env" || return 1
-  [ -s "$dir/install.sh" ] \
-    || { printf '%s: install.sh missing or empty\n' "$role" >&2; return 1; }
-  head -n1 "$dir/install.sh" | grep -q '^#!' \
-    || { printf '%s: install.sh has no shebang\n' "$role" >&2; return 1; }
-  grep -q '[^[:space:]]' "$dir/creds.md" 2>/dev/null \
-    || { printf '%s: creds.md missing or blank (the context renderer splices it in — a blank paragraph would ship a context file with a hole)\n' "$role" >&2; return 1; }
+  family="$(template_family "$role" 2>/dev/null || true)"
+  [ -n "$family" ] || {
+    printf '%s: role directories carry a family suffix (-box for box tenants, -server for fleet machines — rig#76; workstation is #152 machine carve-out)\n' "$role" >&2
+    return 1
+  }
+  if [ "$family" = "tenant" ]; then
+    template_parse_env "$dir/template.env" || return 1
+    [ -s "$dir/install.sh" ] \
+      || { printf '%s: install.sh missing or empty\n' "$role" >&2; return 1; }
+    head -n1 "$dir/install.sh" | grep -q '^#!' \
+      || { printf '%s: install.sh has no shebang\n' "$role" >&2; return 1; }
+    grep -q '[^[:space:]]' "$dir/creds.md" 2>/dev/null \
+      || { printf '%s: creds.md missing or blank (the context renderer splices it in — a blank paragraph would ship a context file with a hole)\n' "$role" >&2; return 1; }
+  else
+    machine_template_parse_env "$dir/template.env" || return 1
+    [ ! -e "$dir/creds.md" ] \
+      || { printf '%s: creds.md is not allowed for machine roles (machines render no tenant context)\n' "$role" >&2; return 1; }
+    if [ -e "$dir/install.sh" ]; then
+      [ -s "$dir/install.sh" ] \
+        || { printf '%s: install.sh is empty\n' "$role" >&2; return 1; }
+      head -n1 "$dir/install.sh" | grep -q '^#!' \
+        || { printf '%s: install.sh has no shebang\n' "$role" >&2; return 1; }
+    fi
+  fi
   return 0
 }

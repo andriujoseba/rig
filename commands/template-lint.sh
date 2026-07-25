@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rig template-lint <role-dir>... — is this a valid tenant-role definition?
+# rig template-lint <role-dir>... — is this a valid role definition?
 #
 # rig defines what a valid template is (the schema lives in
 # lib/templates.sh, beside the mint-time parser that enforces it); the
@@ -23,12 +23,15 @@ usage() {
   cat <<'EOF'
 usage: rig template-lint <role-dir>...
 
-Validate tenant-role definitions (the heavy-duty/rig-templates shape):
-each <role-dir> must carry a family-suffixed name (rig#76), a template.env
-that parses against the allowlist (KEY="value" only — the file is data,
-never sourced), an install.sh with a shebang, and a non-blank creds.md.
-Every refusal names the failing key or file. Exits non-zero if any
-definition fails; nothing is written.
+Validate role definitions (the heavy-duty/rig-templates shape).
+
+Tenant roles use a *-box directory, tenant template.env schema, a shebang
+install.sh, and non-blank creds.md. Machine roles use a *-server directory
+(or exact name workstation), the ROOT_DOOR/HOST/JOIN schema, no creds.md,
+and an optional install.sh which must be non-empty and carry a shebang.
+template.env is parsed as KEY="value" data and never sourced. Every refusal
+names the failing key or file. Exits non-zero if any definition fails;
+nothing is written.
 EOF
 }
 
