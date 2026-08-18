@@ -956,6 +956,17 @@ Two properties follow, and both are the point:
   `config.sh` in it; calling that one of rig's because of where it sits is the
   same untruth as reporting one runner of four. The legacy layout below is the
   one exception, and it is the migration.
+- **The flag reads the evidence wherever the instance lives.** The listing
+  spans the whole box, so it also finds rig's own instances under a *different*
+  service user — a box that separates two repos' runners with `--user` has
+  them — and those are `managed` too: the evidence is the marker rig wrote (or,
+  on an install predating it, the labels rig recorded), not which base the
+  directory happens to sit in. What that flag does **not** grant is reach:
+  `install` and `repoint` build in one base and chown the instance directory to
+  the `--user` they were given, so an instance belonging to another service
+  user is refused rather than re-owned, and the refusal names the `--user` that
+  reaches it. `status` and `remove` need no layout and keep working across the
+  whole box.
 - **A teardown that could not finish says so.** `remove` exits non-zero and
   names the runners still standing, rather than reporting a removal it did not
   complete. It stops the service on every path it can, including the ones
