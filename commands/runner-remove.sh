@@ -153,7 +153,10 @@ remove_one() { # remove_one <name> <dir> <unit>
     warn "stop and disable it by hand: systemctl disable --now ${unit}"
     return 0
   fi
-  if [ ! -e "$dir/.runner" ] && [ ! -e "$dir/.service" ]; then
+  # The unit counts: a hand-rolled sibling whose registration is already gone
+  # server-side still has a service taking jobs, and returning here would leave
+  # it running while reporting the runner removed.
+  if [ ! -e "$dir/.runner" ] && [ ! -e "$dir/.service" ] && [ -z "$unit" ]; then
     log "runner ${name}: nothing registered in ${dir}; nothing to remove"
     return 0
   fi
