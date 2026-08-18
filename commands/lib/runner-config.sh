@@ -149,12 +149,60 @@ runner_instance_name() {
 # installed before instances existed is that shape, none of them has the
 # marker, and they are adopted in place — asking for it there would flag the
 # entire installed fleet as somebody else's and refuse to converge it.
+#
+# `.rig-labels` is evidence too (#174 round 4). Only rig writes it, and it is
+# the ONE artefact a pre-#166 install left: such a box is the legacy shape, so
+# under the selected --user the exemption above already covers it — but the
+# same box under ANOTHER service user is reached only by the systemd scan,
+# where there is no base to be exempt by and no marker to find. Marker-only
+# evidence printed `unmanaged` over one of rig's own installs there. It is
+# weaker than the marker (a `remove` deletes it, keeping the marker on
+# purpose), which is why it is the second question and never the first.
+#
+# No evidence is `unmanaged`, and that is deliberate: a directory named
+# `actions-runner` under some home is NOT taken for rig's on its shape alone —
+# location as evidence is the round 1 finding, and anyone can mkdir it. The
+# first rig command run against that service user adopts it and marks it.
 runner_instance_flag() {
-  if [ "$2" = "$1" ] || [ -r "$2/.rig-instance" ]; then
+  local base="$1" dir="$2"
+  [ -n "$dir" ] || { printf 'unmanaged'; return 0; }
+  if { [ -n "$base" ] && [ "$dir" = "$base" ]; } \
+    || [ -r "$dir/.rig-instance" ] || [ -r "$dir/.rig-labels" ]; then
     printf 'managed'
   else
     printf 'unmanaged'
   fi
+}
+
+# runner_dir_in_base <base> <dir> — 0 when <dir> is a place rig's own layout
+# puts an instance for THIS invocation: the legacy <base> itself, or one of its
+# direct children.
+#
+# Ownership and reach are different questions, and conflating them was the
+# second half of #174 round 4. `managed` says rig created the instance; it says
+# nothing about whether the command in hand can act on it, because the base is
+# a function of --user and the box has as many bases as it has service users.
+# The verbs that BUILD in rig's layout — install, and repoint through it — need
+# the second answer: install chowns BASE_DIR and RUNNER_DIR to its own
+# --user, so running it over another user's tree re-owns that tree.
+#
+# One level, not a prefix match: <base>/<name> is the layout, and <base>/a/b is
+# not somewhere rig puts anything.
+runner_dir_in_base() {
+  local base="$1" dir="$2" rest
+  [ -n "$base" ] && [ -n "$dir" ] || return 1
+  [ "$dir" != "$base" ] || return 0
+  case "$dir" in "$base"/?*) rest="${dir#"$base"/}" ;; *) return 1 ;; esac
+  case "$rest" in */*) return 1 ;; esac
+  return 0
+}
+
+# runner_dir_owner <dir> — the user a directory belongs to, empty when rig
+# cannot tell. The --user a refusal names has to come from the box, not from a
+# guess: a cross-user refusal that cannot say which user is a dead end.
+runner_dir_owner() {
+  [ -n "$1" ] && [ -e "$1" ] || return 0
+  stat -c '%U' "$1" 2>/dev/null || true
 }
 
 # runner_dir_unit <dir> — the systemd unit svc.sh recorded, empty when the
@@ -293,9 +341,22 @@ runner_merge_instances() {
     else
       name="$(runner_unit_name "$unit")"
     fi
+    # The flag is READ here, not assumed (#174 round 4). A scanned unit is one
+    # rig's walk did not reach, which is not the same fact as one rig did not
+    # create: the walk covers the selected --user's base, and a box running
+    # rig's instances under two service users has the rest of them out here.
+    # Hard-coding `unmanaged` printed "rig did not create this" over a
+    # directory carrying rig's own marker — a false fact in the all-box view
+    # `status` exists to make true, and it drove repoint's refusal to blame
+    # ownership for what was really the wrong --user. Same evidence as the
+    # walk, one function, so the two halves of the listing cannot disagree.
+    #
+    # No base is passed: the exemption in there is for the base of THIS
+    # invocation, which by construction is not where we are.
+    f="$(runner_instance_flag "" "$dir")"
     # Always live: a scanned unit IS a runner the box runs, whatever rig can
     # read of the directory behind it.
-    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$dir" "$unit" "unmanaged" "live"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$dir" "$unit" "$f" "live"
   done
 }
 
@@ -376,7 +437,30 @@ registering over it would deregister that runner (config.sh --replace).
 Pick another --name, or take that one down first." >&2
       return 1
     fi
-    printf '%s\t%s\n' "$(printf '%s' "$line" | cut -f2)" "$name"
+    # ...and one rig DID create, under a different service user, is refused
+    # here rather than adopted (#174 round 4). The listing reaches across the
+    # whole box; install builds in one base and chowns BASE_DIR and RUNNER_DIR
+    # to the --user it was given, so converging an instance that lives outside
+    # this base would re-own another user's runner tree — the "looks like it
+    # did the whole job" shape, from the other end. It is not a refusal to act:
+    # it is a refusal to act as the wrong user, and it names the right one.
+    #
+    # The dir a scan reports for one of rig's OWN instances under this user can
+    # differ from the walk's by a symlinked home; that instance lands here too,
+    # and the refusal still names the directory and the user that owns it,
+    # which is the pair the operator needs either way.
+    dir="$(printf '%s' "$line" | cut -f2)"
+    if ! runner_dir_in_base "$base" "$dir"; then
+      other="$(runner_dir_owner "$dir")"
+      printf 'rig-runner: ERROR: %s\n' \
+"runner '${name}' lives at ${dir:-(directory unknown)}, outside ${base}:
+$(runner_candidates "$line")
+it belongs to another service user, and installing it from here would re-own
+that runner's directory as this command's --user.${other:+
+Re-run it against the user that owns it: --user ${other}}" >&2
+      return 1
+    fi
+    printf '%s\t%s\n' "$dir" "$name"
     return 0
   fi
 
@@ -407,6 +491,17 @@ Pick another --name, or take that one down first." >&2
   # "installed and running" that it had not created. Nothing is deregistered on
   # either path (assert_runner_repo catches a different repo first); what is
   # wrong is rig claiming a directory that already answers to someone.
+  #
+  # Which door each case goes through is worth being exact about (#174 round 4,
+  # @claude-bot-andresmgsl): the hand-rolled `--name other` is refused UPSTREAM
+  # by the `unmanaged` check, because the walk enumerated that instance — this
+  # branch is not what catches it, and reading the two refusals as alternatives
+  # for the same input would be wrong. What reaches here is a name that matched
+  # NOTHING, which is why the question is about the directory. That leaves the
+  # `other == name` fall-through unreachable from the CLI: a dormant
+  # hand-rolled <base>/foo answering to `foo` is enumerated and refused by name
+  # first. It stays, as the defensive floor on the one path where the upstream
+  # guard has already said no such instance exists.
   if runner_is_instance_dir "$dir"; then
     other="$(runner_instance_name "$dir")"
     if [ "$other" != "$name" ]; then

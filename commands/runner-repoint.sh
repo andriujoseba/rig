@@ -168,6 +168,28 @@ Do it as two explicit steps, and rig will own it afterwards:
   rig runner install --repo ${REPO} --name ${RUNNER_NAME}"
 fi
 
+# Ownership answered, reach is the other question (#174 round 4). The listing
+# spans the whole box — every actions.runner.* unit, whichever service user's
+# home the instance lives in — and rig's own instances under ANOTHER user are
+# `managed`, correctly. This verb still cannot move one: the install at the far
+# end runs with the --user given here and chowns the instance directory to it,
+# so a move across users would re-own that user's tree while reporting a
+# routine repoint. It is refused above the tokens and above the teardown, with
+# the same rule as everything else here — a move that cannot complete fails
+# while the runner is still registered and still working.
+#
+# The unmanaged refusal comes first on purpose: for a hand-rolled runner "rig
+# did not create it" is the terminal answer and no --user makes repoint work,
+# so pointing at one would send the operator down a dead end.
+if ! runner_dir_in_base "$BASE_DIR" "$RUNNER_DIR"; then
+  OWNER="$(runner_dir_owner "$RUNNER_DIR")"
+  die "runner ${RUNNER_NAME} lives at ${RUNNER_DIR}, outside ${BASE_DIR}:
+it belongs to another service user, and repointing it as ${RUNNER_USER} would
+re-own its directory. Nothing has been touched.${OWNER:+
+Re-run it against the user that owns it:
+  rig runner repoint --repo ${REPO} --name ${RUNNER_NAME} --user ${OWNER}}"
+fi
+
 # --- the name it will answer to afterwards -----------------------------------
 # Resolved here, above everything that can change the box, because both of the
 # questions below turn on it: is this rename a change at all, and is the name
