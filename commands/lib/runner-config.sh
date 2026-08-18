@@ -389,6 +389,21 @@ Pick another --name, or take that one down first." >&2
 "${dir} exists and is not a runner install — choose another --name" >&2
     return 1
   fi
+  # ...and refusing an install rig did not create is the same rule reached by
+  # the other door. The refusal above catches the name, this one the DIRECTORY:
+  # <base>/mine registered by hand as `other` is correctly refused as
+  # --name other (it is on the list, flagged unmanaged), but --name mine
+  # matches no instance and arrives here — where, without this, rig would write
+  # its marker into somebody else's install and adopt it. Nothing is
+  # deregistered either way (assert_runner_repo catches a different repo first);
+  # what is wrong is rig claiming a directory it did not make.
+  if runner_is_instance_dir "$dir" && [ ! -r "$dir/.rig-instance" ]; then
+    printf 'rig-runner: ERROR: %s\n' \
+"${dir} already holds a runner install rig did not create (it answers to
+'$(runner_instance_name "$dir")'), and registering into it would adopt it.
+Pick another --name, or take that runner down first." >&2
+    return 1
+  fi
   printf '%s\t%s\n' "$dir" "$name"
 }
 

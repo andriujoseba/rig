@@ -126,7 +126,14 @@ BASE_DIR="$(runner_base_dir "$USER_HOME")"
 # --- which runner? -----------------------------------------------------------
 # runner_live, because a deregistered instance keeps its binary: the directory
 # survives `remove` and the runner does not. Only `install` looks at those.
-INSTANCES="$(runner_scan_units | runner_merge_instances "$BASE_DIR" | runner_live)"
+#
+# The unfiltered set is kept as well, and only the rename check reads it: which
+# runner this box RUNS is one question, whether a NAME is free is another, and
+# a dormant directory answers the second just as loudly as a live one — the
+# re-registration at the far end of a move goes through `install`, which does
+# not filter either. See the rename guard below.
+ALL_INSTANCES="$(runner_scan_units | runner_merge_instances "$BASE_DIR")"
+INSTANCES="$(printf '%s\n' "$ALL_INSTANCES" | runner_live)"
 COUNT="$(runner_count "$INSTANCES")"
 
 [ "$COUNT" -gt 0 ] \
@@ -157,11 +164,59 @@ Do it as two explicit steps, and rig will own it afterwards:
   rig runner install --repo ${REPO} --name ${RUNNER_NAME}"
 fi
 
+# --- the name it will answer to afterwards -----------------------------------
+# Resolved here, above everything that can change the box, because both of the
+# questions below turn on it: is this rename a change at all, and is the name
+# it asks for free.
+FINAL_NAME="${NEW_NAME:-$RUNNER_NAME}"
+
+# A rename is checked against the box BEFORE a token is asked for and BEFORE
+# anything is torn down (#174 round 2).
+#
+# The order used to be: remove (stop, uninstall, deregister) → rewrite
+# .rig-instance to the new name → install → and only THEN the resolver noticing
+# that two directories answer to it and refusing. That left the runner
+# deregistered, and left it unreachable: the marker rewrite survives the
+# failure, so --name <old> no longer finds the directory and --name <new> is
+# refused as ambiguous. The recovery command the failure printed hit the same
+# wall, and the only way back was hand-editing the box-local file this layout
+# exists so nobody has to touch. A move that cannot complete must fail while
+# the runner is still registered and still working — the same rule the tokens
+# above are collected under.
+#
+# Against ALL_INSTANCES, not the live ones: a directory an earlier `remove`
+# left behind holds the name just as firmly (its .rig-instance is what the
+# install at the far end resolves against) and `status` does not list it, so
+# nothing on the box would warn first.
+#
+# Excluded by DIRECTORY, not by name: after this, the selected instance is the
+# one thing that may already answer to the new name — a re-run of a rename that
+# got as far as the marker, or a name this instance already carries — and
+# matching on the name would make the guard refuse itself.
+if [ "$FINAL_NAME" != "$RUNNER_NAME" ]; then
+  CLASH="$(printf '%s\n' "$ALL_INSTANCES" \
+    | awk -F'\t' -v n="$FINAL_NAME" -v d="$RUNNER_DIR" 'NF && $1 == n && $2 != d')"
+  if [ -n "$CLASH" ]; then
+    die "the name '${FINAL_NAME}' already belongs to a runner on this box:
+$(runner_candidates "$CLASH")
+Renaming ${RUNNER_NAME} to it would leave two instances answering to
+'${FINAL_NAME}', and the re-registration would then be refused with
+${RUNNER_NAME} already deregistered. Nothing has been touched.
+Pick another --rename, or take that one down first:
+  rig runner remove --name ${FINAL_NAME}"
+  fi
+fi
+
 # --- what is it registered to now? ------------------------------------------
 CURRENT_URL="$(runner_repo_url "$RUNNER_DIR")"
 TARGET_URL="https://github.com/${REPO}"
 
-if [ "$CURRENT_URL" = "$TARGET_URL" ] && [ -z "$NEW_NAME" ]; then
+# FINAL_NAME against RUNNER_NAME, not "was --rename passed": the flag asking
+# for the name the instance already has is not a change, and the help text
+# promises exactly that convergence. Testing the flag instead sent
+# `--rename solo` on the instance already called solo through the full
+# teardown — stop, uninstall, deregister — to re-register it as itself.
+if [ "$CURRENT_URL" = "$TARGET_URL" ] && [ "$FINAL_NAME" = "$RUNNER_NAME" ]; then
   log "runner ${RUNNER_NAME} is already registered to ${REPO}; nothing to do"
   exit 0
 fi
@@ -176,7 +231,6 @@ if [ -z "$LABELS" ]; then
   fi
 fi
 
-FINAL_NAME="${NEW_NAME:-$RUNNER_NAME}"
 log "moving runner ${RUNNER_NAME} (${RUNNER_DIR}) from ${CURRENT_URL} to ${TARGET_URL}"
 [ "$FINAL_NAME" = "$RUNNER_NAME" ] || log "renaming it to ${FINAL_NAME}"
 log "labels: ${LABELS}"
