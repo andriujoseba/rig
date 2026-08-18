@@ -332,7 +332,7 @@ runner_count() { printf '%s\n' "$1" | grep -c . || true; }
 # the test harness can fabricate, and the rules below are exactly the ones the
 # acceptance criteria are about.
 runner_resolve_instance() {
-  local base="$1" name="$2" given="$3" instances="$4" line dir
+  local base="$1" name="$2" given="$3" instances="$4" line dir other
 
   # The one rule that reads the box rather than the name, and the whole of the
   # migration: a box whose runner lives in the legacy <base> layout keeps it.
@@ -389,20 +389,34 @@ Pick another --name, or take that one down first." >&2
 "${dir} exists and is not a runner install — choose another --name" >&2
     return 1
   fi
-  # ...and refusing an install rig did not create is the same rule reached by
-  # the other door. The refusal above catches the name, this one the DIRECTORY:
-  # <base>/mine registered by hand as `other` is correctly refused as
-  # --name other (it is on the list, flagged unmanaged), but --name mine
-  # matches no instance and arrives here — where, without this, rig would write
-  # its marker into somebody else's install and adopt it. Nothing is
-  # deregistered either way (assert_runner_repo catches a different repo first);
-  # what is wrong is rig claiming a directory it did not make.
-  if runner_is_instance_dir "$dir" && [ ! -r "$dir/.rig-instance" ]; then
-    printf 'rig-runner: ERROR: %s\n' \
-"${dir} already holds a runner install rig did not create (it answers to
-'$(runner_instance_name "$dir")'), and registering into it would adopt it.
-Pick another --name, or take that runner down first." >&2
-    return 1
+  # ...and refusing an install that answers to a DIFFERENT name is the same
+  # rule reached by the other door. The refusal above catches the name, this
+  # one the DIRECTORY, and reaching here at all means the name matched no
+  # instance on the box — so an install sitting at <base>/<name> is by
+  # definition one that answers to something else.
+  #
+  # Two ways a box gets into that state, and the discriminator is the NAME, not
+  # the marker (#174 round 3): <base>/mine registered by hand as `other` is
+  # correctly refused as --name other (it is on the list, flagged unmanaged),
+  # but --name mine falls through to here carrying no marker; and a
+  # `repoint --rename old fresh` deliberately leaves the directory alone and
+  # moves the identity, so <base>/old carries rig's own marker reading `fresh`
+  # while the directory name `old` resolves to nothing. Testing for a missing
+  # marker caught the first and walked straight into the second — rewriting a
+  # live runner's identity record, skipping configure, and reporting a runner
+  # "installed and running" that it had not created. Nothing is deregistered on
+  # either path (assert_runner_repo catches a different repo first); what is
+  # wrong is rig claiming a directory that already answers to someone.
+  if runner_is_instance_dir "$dir"; then
+    other="$(runner_instance_name "$dir")"
+    if [ "$other" != "$name" ]; then
+      printf 'rig-runner: ERROR: %s\n' \
+"${dir} already holds a runner that answers to '${other}', and registering
+into it would adopt that one rather than create '${name}'. It is '${other}' to
+every rig command, whatever its directory is called: pick another --name, or
+take that runner down first." >&2
+      return 1
+    fi
   fi
   printf '%s\t%s\n' "$dir" "$name"
 }

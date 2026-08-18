@@ -203,9 +203,12 @@ chown "$RUNNER_USER:$RUNNER_USER" "$BASE_DIR" "$RUNNER_DIR"
 # refuse to touch again as somebody else's hand-rolled runner. Claiming the
 # directory and marking it are the same act, so they happen together.
 #
-# Never for the legacy base on a converge run: that box is adopted in place and
-# has no marker by definition, and RUNNER_NAME there is its own adopted name,
-# so writing it is a no-op the guard below already skips.
+# The legacy base is adopted in place and carries no marker by definition, so
+# the first converge run after this lands DOES write one — and writes the right
+# thing: RUNNER_NAME there is the name that box already answered to, resolved
+# from its own `.runner` (or the hostname default when it never registered),
+# never the directory. Adoption is what the write records; the guard skips only
+# the re-write on every converge after it.
 if [ ! -r "$RUNNER_DIR/.rig-instance" ] \
   || [ "$(head -n1 "$RUNNER_DIR/.rig-instance")" != "$RUNNER_NAME" ]; then
   printf '%s\n' "$RUNNER_NAME" > "$RUNNER_DIR/.rig-instance"

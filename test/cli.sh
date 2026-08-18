@@ -1762,13 +1762,41 @@ printf '%s\n' '{"agentId":9,"agentName":"other","gitHubUrl":"https://github.com/
 check "adopt: the name it registered under is refused, as it always was" \
   1 "taken by a runner rig did not create" resolve "$ADOPT_DIR_BOX" other 1
 check "adopt: its DIRECTORY name is refused too, which used to fall through" \
-  1 "rig did not create" resolve "$ADOPT_DIR_BOX" theirs 1
+  1 "already holds a runner that answers to" resolve "$ADOPT_DIR_BOX" theirs 1
 check "adopt: that refusal says what the directory actually answers to" \
   1 "'other'" resolve "$ADOPT_DIR_BOX" theirs 1
 # The guard is about occupied directories, not about the box: a free name on
 # the same box still resolves to a new instance.
 check "adopt: a free name on that box is a new instance as before" \
   0 "${ADOPT_DIR_BOX}/ours	ours" resolve "$ADOPT_DIR_BOX" ours 1
+
+# Round 3 of #174, @claude-bot-andresmgsl: the refusal above asked whether the
+# occupied directory carried a `.rig-instance`, and the question is whether it
+# answers to THIS name. `repoint --rename`, new in this PR, is the producer of
+# the state the marker test misses: a rename moves the identity and leaves the
+# directory where it is, so <base>/old carries rig's OWN marker reading `fresh`
+# and the directory name `old` resolves to nothing. `--name old` then found a
+# readable marker, walked in, rewrote a live runner's identity record, skipped
+# configure — GitHub still knowing it as `fresh` — and reported a runner
+# "installed and running" that it had not created. Same class as the
+# hand-rolled case, reached through this PR's own door.
+RENAMED_BOX="$(mktemp -d)"
+mkdir -p "$RENAMED_BOX/old"
+printf '%s\n' '{"agentId":9,"agentName":"fresh","gitHubUrl":"https://github.com/acme/new","workFolder":"_work"}' \
+  > "$RENAMED_BOX/old/.runner"
+: > "$RENAMED_BOX/old/config.sh"
+printf '%s\n' 'fresh' > "$RENAMED_BOX/old/.rig-instance"
+check "rename: the directory's old name is refused, marker or no marker" \
+  1 "already holds a runner that answers to" resolve "$RENAMED_BOX" old 1
+check "rename: ...and the refusal names what it answers to now" \
+  1 "'fresh'" resolve "$RENAMED_BOX" old 1
+# ...while the name the box and GitHub both know still converges that instance,
+# in the directory it never left: the guard must not refuse the runner to
+# itself.
+check "rename: the name it answers to converges its own directory" \
+  0 "${RENAMED_BOX}/old	fresh" resolve "$RENAMED_BOX" fresh 1
+check "rename: and a free name beside it is still a new instance" \
+  0 "${RENAMED_BOX}/second	second" resolve "$RENAMED_BOX" second 1
 
 # --- one instance, one line ---------------------------------------------------
 # Round 1 of #174, non-blocking: the merge deduped on the directory alone, so a
@@ -2142,6 +2170,39 @@ check "repoint --rename: ...and is registered to the new repo under it" \
   0 "acme/new" cat "$BASE/old/.runner"
 check "repoint --rename: ...as the new name, not the old one" \
   0 "\"agentName\":\"fresh\"" cat "$BASE/old/.runner"
+
+# Round 3 of #174, on the box the rename above just produced — executed, not
+# grepped, and against the state rig itself reached rather than one hand-built
+# for the assertion. `--name old` names a directory that answers to `fresh`:
+# pre-fix rig walked in, rewrote the marker, skipped configure and exited 0
+# "installed and running", having created no second runner and left the name
+# GitHub knows resolving to nothing.
+install_run() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    RUNNER_TOKEN=registration-token \
+    "$ROOT/commands/runner-install.sh" "$@" </dev/null
+}
+: > "$SVC_LOG"
+check "install after a rename: the old directory name is refused" \
+  1 "already holds a runner that answers to" \
+  install_run --repo acme/new --name old
+check "install after a rename: ...naming the runner it would have adopted" \
+  1 "'fresh'" install_run --repo acme/new --name old
+check "install after a rename: ...the identity record is NOT rewritten" \
+  0 "fresh" cat "$BASE/old/.rig-instance"
+check "install after a rename: ...the registration is untouched" \
+  0 "\"agentName\":\"fresh\"" cat "$BASE/old/.runner"
+check "install after a rename: ...and nothing was configured or started" \
+  1 "" test -s "$SVC_LOG"
+check "install after a rename: ...no sibling was created either" \
+  1 "" test -e "$BASE/old/old"
+# The route that must keep working, on the same box: the name it does answer to
+# converges the instance in place, re-using the binary and asking for nothing.
+check "install after a rename: the name it answers to still converges it" \
+  0 "already registered" install_run --repo acme/new --name fresh
+check "install after a rename: ...in the directory the rename left it in" \
+  0 "" grep -qx 'svc start old' "$SVC_LOG"
 FAKE_HOME=""
 
 # --- names as path components --------------------------------------------------
