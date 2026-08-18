@@ -1550,15 +1550,49 @@ printf '%s\n' '{"agentId":7,"agentName":"ci-box","gitHubUrl":"https://github.com
 mkdir -p "$LEGACY_BOX/bin" "$LEGACY_BOX/externals" "$LEGACY_BOX/_work"
 printf '%s\n' 'actions.runner.acme-alpha.ci-box.service' > "$LEGACY_BOX/.service"
 
-# MULTI_BOX: two named instances in the new layout, side by side.
+# MULTI_BOX: two named instances in the new layout, side by side. Both carry
+# .rig-instance, because that marker is what makes an instance rig's: a named
+# directory under the base is `managed` only when rig can prove it put it there
+# (see UNDER_BASE_BOX below), and install writes the marker the moment it
+# claims the directory.
 MULTI_BOX="$(mktemp -d)"
 for n in ci-1 ci-2; do
   mkdir -p "$MULTI_BOX/$n"
   printf '%s\n' "{\"agentId\":1,\"agentName\":\"${n}\",\"gitHubUrl\":\"https://github.com/acme/alpha\",\"workFolder\":\"_work\"}" \
     > "$MULTI_BOX/$n/.runner"
   : > "$MULTI_BOX/$n/config.sh"
+  printf '%s\n' "$n" > "$MULTI_BOX/$n/.rig-instance"
   printf '%s\n' "actions.runner.acme-alpha.${n}.service" > "$MULTI_BOX/$n/.service"
 done
+
+# UNDER_BASE_BOX: rig's own named instance beside a HAND-ROLLED one, both under
+# the base. `mine` has the marker; `manual` is a directory someone made and ran
+# config.sh in — which is how boxes get concurrency today. Sitting under the
+# base is not evidence rig created it, and flagging it `managed` on location
+# alone was reported by all three reviewers on round 1 of #174.
+UNDER_BASE_BOX="$(mktemp -d)"
+for n in mine manual; do
+  mkdir -p "$UNDER_BASE_BOX/$n"
+  printf '%s\n' "{\"agentId\":2,\"agentName\":\"${n}\",\"gitHubUrl\":\"https://github.com/acme/alpha\",\"workFolder\":\"_work\"}" \
+    > "$UNDER_BASE_BOX/$n/.runner"
+  : > "$UNDER_BASE_BOX/$n/config.sh"
+done
+printf '%s\n' 'mine' > "$UNDER_BASE_BOX/mine/.rig-instance"
+UNDER_BASE_UNITS="$(printf 'actions.runner.acme-alpha.mine.service\t%s/mine\nactions.runner.acme-alpha.manual.service\t%s/manual\n' \
+  "$UNDER_BASE_BOX" "$UNDER_BASE_BOX")"
+
+# ADOPT_BOX: the legacy layout with the tarball unpacked and NOTHING registered
+# — no .rig-instance, no .runner. Two pre-#166 boxes are in this state: one that
+# ran the documented `remove` then `install` cycle under the old code, and one
+# whose first install had config.sh fail on an expired token.
+# Named `actions-runner` for real, because that literal string IS the finding:
+# it is what runner_base_dir yields on every box, so it is what basename
+# returned and what got registered.
+ADOPT_BOX="$(mktemp -d)/actions-runner"
+mkdir -p "$ADOPT_BOX"
+: > "$ADOPT_BOX/config.sh"
+: > "$ADOPT_BOX/svc.sh"
+mkdir -p "$ADOPT_BOX/bin" "$ADOPT_BOX/externals"
 
 # EMPTY_BOX: the runner user exists, nothing is installed.
 EMPTY_BOX="$(mktemp -d)"
@@ -1637,6 +1671,25 @@ check "install: no --name on a legacy box adopts it IN PLACE" \
 # ...and the adoption is by layout, not by luck of the name matching.
 check "install: adoption keeps the legacy name, not the hostname default" \
   0 "ci-box" resolve "$LEGACY_BOX" some-other-hostname 0
+# Round 1 of #174: adopting a legacy base that holds NEITHER .rig-instance nor
+# .runner used to fall through to basename and register the literal string
+# "actions-runner" — as the config.sh --name argument, the .rig-instance
+# record, the runner's name in the repo's Runners list and the unit name.
+# AC2 says such a box converges on the hostname default.
+check "install: an unregistered legacy base takes the caller's name" \
+  0 "${ADOPT_BOX}	ci-box-42" resolve "$ADOPT_BOX" ci-box-42 0
+# Exit 1 from grep is the assertion: the resolved NAME field is never the
+# literal "actions-runner" the basename fallback used to hand to config.sh.
+check "install: ...never the literal 'actions-runner'" 1 "" \
+  bash -c 'resolve() { bash -c '"'"'set -euo pipefail
+      . "$1/commands/lib/runner-config.sh"
+      runner_resolve_instance "$2" "$3" "$4" ""'"'"' _ "$1" "$2" "$3" "$4"; }
+    resolve "$1" "$2" ci-box-42 0 | cut -f2 | grep -qx actions-runner' \
+  _ "$ROOT" "$ADOPT_BOX"
+# The listing view keeps the basename fallback on purpose — it has to call the
+# row something, and "that box never told anyone a name" is honest there.
+check "install: the LISTING still falls back to the directory name" \
+  0 "actions-runner" lib runner_instance_name "$ADOPT_BOX"
 # Convergence per instance: naming one that exists resolves to ITS directory.
 check "install: --name an existing instance converges that one" \
   0 "${MULTI_BOX}/ci-2	ci-2" resolve "$MULTI_BOX" ci-2 1
@@ -1667,6 +1720,49 @@ select_one() { # select_one <base> <name> [units]
       "$(printf "%s" "${4:-}" | runner_merge_instances "$3")" "  try --name"' \
     _ "$ROOT" "$2" "$1" "${3:-}"
 }
+
+# --- managed means rig put it there, not "it sits under the base" -------------
+# Round 1 of #174, all three reviewers: a hand-made <base>/manual holding
+# config.sh and a .runner came out `managed live`, because the directory walk
+# flagged everything under the base. AC3's word for a runner rig did not create
+# is `unmanaged`, and `status` printing `managed` over one is the same class of
+# untruth as `status` printing one runner of four.
+check "managed: a hand-rolled directory UNDER the base is unmanaged" \
+  0 "unmanaged" lib runner_pick manual "$(instances "$UNDER_BASE_BOX" "$UNDER_BASE_UNITS")"
+check "managed: ...and it is still listed, not hidden" \
+  0 "2" lib runner_count "$(instances "$UNDER_BASE_BOX" "$UNDER_BASE_UNITS")"
+check "managed: rig's own named instance beside it keeps its flag" \
+  0 "managed" lib runner_pick mine "$(instances "$UNDER_BASE_BOX" "$UNDER_BASE_UNITS")"
+# The migration: every box installed before instances existed is the legacy
+# layout, none of them has the marker, and demanding one there would flag the
+# whole installed fleet as somebody else's and refuse to converge it.
+check "managed: the LEGACY base stays managed with no marker" \
+  0 "managed" lib runner_pick ci-box "$(instances "$LEGACY_BOX")"
+check "managed: an unregistered legacy base is managed too" \
+  0 "managed" lib runner_instance_flag "$ADOPT_BOX" "$ADOPT_BOX"
+# The flag is load-bearing, not cosmetic: resolve_instance refuses to register
+# over an unmanaged instance, and that refusal was correct all along — it was
+# simply never reached for a hand-rolled directory under the base.
+check "managed: install refuses to register over the hand-rolled one" \
+  1 "taken by a runner rig did not create" \
+  resolve "$UNDER_BASE_BOX" manual 1 "$UNDER_BASE_UNITS"
+check "managed: ...and still converges its own" \
+  0 "${UNDER_BASE_BOX}/mine	mine" resolve "$UNDER_BASE_BOX" mine 1 "$UNDER_BASE_UNITS"
+
+# --- one instance, one line ---------------------------------------------------
+# Round 1 of #174, non-blocking: the merge deduped on the directory alone, so a
+# unit whose WorkingDirectory differs from the walk's path by a single
+# character — a symlinked home, a trailing slash — emitted that instance TWICE,
+# once managed from the walk and once unmanaged from the scan. status
+# double-counted it and both selectors then refused it as ambiguous.
+DEDUP_UNITS="$(printf 'actions.runner.acme-alpha.ci-1.service\t%s/ci-1/\nactions.runner.acme-alpha.ci-2.service\t%s/ci-2\n' \
+  "$MULTI_BOX" "$MULTI_BOX")"
+check "dedup: a unit reported under a differing path is not a second instance" \
+  0 "2" lib runner_count "$(instances "$MULTI_BOX" "$DEDUP_UNITS")"
+check "dedup: ...and the survivor is the managed one" \
+  0 "managed" lib runner_pick ci-1 "$(instances "$MULTI_BOX" "$DEDUP_UNITS")"
+check "dedup: ...so the selector still resolves that name" \
+  0 "${MULTI_BOX}/ci-1" select_one "$MULTI_BOX" ci-1 "$DEDUP_UNITS"
 # One runner on the box: --name stays optional, exactly as before.
 check "select: one runner and no --name picks it" \
   0 "ci-box" select_one "$LEGACY_BOX" ""

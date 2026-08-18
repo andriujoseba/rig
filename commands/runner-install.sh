@@ -188,6 +188,30 @@ log "instance ${RUNNER_NAME} at ${RUNNER_DIR}"
 mkdir -p "$RUNNER_DIR"
 chown "$RUNNER_USER:$RUNNER_USER" "$BASE_DIR" "$RUNNER_DIR"
 
+# The mark of rig's ownership goes down HERE, with the directory rig just
+# claimed — before the download and before config.sh, not after them.
+#
+# Two reasons, and the second is why it moved (#174 round 1). The name is what
+# every selector resolves against and it must outlive the registration:
+# `remove` deletes .runner and .rig-labels and keeps the binary, so without
+# this an instance would lose its identity the moment it was removed, and
+# `install` would build a sibling beside the directory it should have re-used.
+# And since `managed` now means "rig put this here" rather than "this sits
+# under the base", writing the marker only on the way OUT would leave every
+# install that died in between — a download that 404s on a pinned version, a
+# config.sh that fails on an expired token — owning a directory rig would
+# refuse to touch again as somebody else's hand-rolled runner. Claiming the
+# directory and marking it are the same act, so they happen together.
+#
+# Never for the legacy base on a converge run: that box is adopted in place and
+# has no marker by definition, and RUNNER_NAME there is its own adopted name,
+# so writing it is a no-op the guard below already skips.
+if [ ! -r "$RUNNER_DIR/.rig-instance" ] \
+  || [ "$(head -n1 "$RUNNER_DIR/.rig-instance")" != "$RUNNER_NAME" ]; then
+  printf '%s\n' "$RUNNER_NAME" > "$RUNNER_DIR/.rig-instance"
+  chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR/.rig-instance"
+fi
+
 # --- download + unpack ------------------------------------------------------
 if [ -e "$RUNNER_DIR/bin/Runner.Listener" ]; then
   log "runner binary already present; skipping download (self-update owns upgrades)"
@@ -236,17 +260,6 @@ else
   # what we registered with — box-local metadata, never a credential.
   printf '%s\n' "$LABELS" > "$RUNNER_DIR/.rig-labels"
   chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR/.rig-labels"
-fi
-
-# Written whether or not this run registered anything: the name is what every
-# selector resolves against, and it must outlive the registration. `remove`
-# deletes .runner and .rig-labels and keeps the binary, so without this an
-# instance would lose its identity the moment it was removed — and `install`
-# would then build a sibling beside the directory it should have re-used.
-if [ ! -r "$RUNNER_DIR/.rig-instance" ] \
-  || [ "$(head -n1 "$RUNNER_DIR/.rig-instance")" != "$RUNNER_NAME" ]; then
-  printf '%s\n' "$RUNNER_NAME" > "$RUNNER_DIR/.rig-instance"
-  chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR/.rig-instance"
 fi
 
 # --- service -------------------------------------------------------------

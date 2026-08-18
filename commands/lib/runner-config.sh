@@ -108,19 +108,53 @@ runner_is_instance_dir() {
   [ -e "$1/.runner" ] || [ -e "$1/config.sh" ]
 }
 
-# runner_instance_name <dir> — the name of the instance in <dir>.
+# runner_named <dir> <fallback> — the name of the instance in <dir>, falling
+# back to <fallback> when the directory itself says nothing.
 #
 # Three sources, in falling order of authority: `.rig-instance` (what rig
 # registered it AS, and the only one that survives a `remove`), the runner's
-# own `.runner`, then the directory name. The last is the legacy dir's answer
-# when it holds neither — it reads "actions-runner", which is honest: that box
-# never told anyone a name.
-runner_instance_name() {
+# own `.runner`, then the caller's fallback. The precedence lives in one place
+# because its two callers disagree only about that last step — see each.
+runner_named() {
   local name=""
   [ -r "$1/.rig-instance" ] && name="$(head -n1 "$1/.rig-instance")"
   [ -n "$name" ] || name="$(runner_agent_name "$1")"
-  [ -n "$name" ] || name="$(basename "$1")"
+  [ -n "$name" ] || name="$2"
   printf '%s' "$name"
+}
+
+# runner_instance_name <dir> — the name of the instance in <dir>, for LISTING.
+#
+# The directory name is the last resort: the legacy dir holding neither marker
+# nor registration reads "actions-runner", which is honest in a listing — that
+# box never told anyone a name, and the listing has to call the row something.
+# It is NOT honest as a name to register with, which is why `install` resolves
+# adoption through runner_named with the hostname default instead (#166).
+runner_instance_name() {
+  runner_named "$1" "$(basename "$1")"
+}
+
+# runner_instance_flag <base> <dir> — `managed` when rig put the install in
+# <dir> there, `unmanaged` otherwise.
+#
+# Location under <base> is NOT the evidence, and treating it as such was the
+# bug: anyone can mkdir <base>/mine and run config.sh in it — that is how boxes
+# get concurrency today, it is the shape the systemd scan exists to surface,
+# and calling it `managed` because of where it sits is the same untruth as
+# `status` reporting one runner of four. `.rig-instance` is written when rig
+# registers an instance, and again by `remove` before it tears one down, so it
+# is the one thing on disk that means "rig put this here".
+#
+# The legacy <base> is the exception and stays `managed` unmarked. Every box
+# installed before instances existed is that shape, none of them has the
+# marker, and they are adopted in place — asking for it there would flag the
+# entire installed fleet as somebody else's and refuse to converge it.
+runner_instance_flag() {
+  if [ "$2" = "$1" ] || [ -r "$2/.rig-instance" ]; then
+    printf 'managed'
+  else
+    printf 'unmanaged'
+  fi
 }
 
 # runner_dir_unit <dir> — the systemd unit svc.sh recorded, empty when the
@@ -195,25 +229,35 @@ runner_scan_units() {
 # The units arrive on stdin rather than being scanned here so the merge stays
 # offline-testable — the harness has no systemd and cannot fabricate one.
 runner_merge_instances() {
-  local base="$1" units d n u name dir
+  local base="$1" units d n u f name dir unit
   units="$(cat)"
-  local managed=""
+  local seen_dirs="" seen_units=""
 
   if [ -n "$base" ]; then
     for d in "$base" "$base"/*; do
       [ -d "$d" ] || continue
       runner_is_instance_dir "$d" || continue
       n="$(runner_instance_name "$d")"
+      f="$(runner_instance_flag "$base" "$d")"
       u="$(runner_dir_unit "$d")"
       # A dir with no .service can still have a unit — one installed before rig
       # recorded it, or by hand. Ask the scan before giving up on it.
       [ -n "$u" ] || u="$(printf '%s' "$units" | awk -F'\t' -v dd="$d" '$2 == dd { print $1; exit }')"
       if [ -e "$d/.runner" ] || [ -n "$u" ]; then
-        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "managed" "live"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "$f" "live"
       else
-        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "managed" "dormant"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "$f" "dormant"
       fi
-      managed="${managed}${d}
+      seen_dirs="${seen_dirs}${d}
+"
+      # The UNIT is remembered too, not just the directory. systemd's
+      # WorkingDirectory for one of rig's own units can differ from the path
+      # the walk arrived at by a single character — a symlinked home, a
+      # trailing slash, a value it cannot report at all — and matching on the
+      # directory alone then emits that instance twice, once `managed` from
+      # here and once `unmanaged` from the scan. `status` double-counted it and
+      # both selectors refused it as "more than one runner answers to <name>".
+      [ -z "$u" ] || seen_units="${seen_units}${u}
 "
     done
   fi
@@ -229,7 +273,10 @@ runner_merge_instances() {
     [ -n "$line" ] || continue
     unit="$(printf '%s' "$line" | cut -f1)"
     dir="$(printf '%s' "$line" | cut -f2)"
-    if [ -n "$dir" ] && printf '%s' "$managed" | grep -qxF "$dir"; then
+    if [ -n "$dir" ] && printf '%s' "$seen_dirs" | grep -qxF "$dir"; then
+      continue
+    fi
+    if printf '%s' "$seen_units" | grep -qxF "$unit"; then
       continue
     fi
     if [ -n "$dir" ] && [ -e "$dir/.runner" ]; then
@@ -284,8 +331,20 @@ runner_resolve_instance() {
   # is called — which is what omitting it meant before instances existed, so
   # such a box converges with the same dir, the same unit and no
   # re-registration. Pass a name and you get an instance, including beside it.
+  #
+  # runner_named with the CALLER's name as the fallback, not
+  # runner_instance_name: adopting a legacy base that holds neither
+  # `.rig-instance` nor `.runner` used to fall through to basename and register
+  # the literal string "actions-runner" — as the config.sh --name argument, the
+  # .rig-instance record, the name in the repo's Runners list and the unit
+  # name — where AC2 says such a box converges on the hostname default. Two
+  # pre-#166 boxes are in exactly that state: one that ran the documented
+  # `remove` then `install` cycle under the old code, which wrote no marker,
+  # and one whose first install had its config.sh fail on an expired token,
+  # leaving the tarball unpacked and nothing registered. A box that DID record
+  # a name still keeps it — that is the adoption, and it comes first.
   if [ "$given" -eq 0 ] && runner_is_instance_dir "$base"; then
-    printf '%s\t%s\n' "$base" "$(runner_instance_name "$base")"
+    printf '%s\t%s\n' "$base" "$(runner_named "$base" "$name")"
     return 0
   fi
 

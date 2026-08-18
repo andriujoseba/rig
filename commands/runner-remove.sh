@@ -144,14 +144,68 @@ if [ "$NEEDS_TOKEN" -eq 1 ]; then
   [ -n "$REMOVE_TOKEN" ] || die "empty removal token"
 fi
 
+# --- take one instance's service down -----------------------------------------
+# stop_service <name> <dir> <unit> — 0 when the service is down, 1 when it is
+# not and the operator has been told.
+#
+# Factored out because EVERY path through remove_one has to reach it, including
+# the two that cannot deregister. Deregistering needs the directory, because
+# config.sh lives in it; stopping the service needs only the unit name, which
+# the systemd scan already gave us. Those are different requirements, and
+# collapsing them is what let a discovered runner keep taking jobs under a
+# reported removal.
+stop_service() { # stop_service <name> <dir> <unit>
+  local name="$1" dir="$2" unit="$3"
+
+  if [ -n "$dir" ] && [ -e "$dir/.service" ]; then
+    log "  stopping and uninstalling the service"
+    if (cd "$dir" && ./svc.sh stop) && (cd "$dir" && ./svc.sh uninstall); then
+      return 0
+    fi
+    warn "runner ${name}: could not take the service in ${dir} down"
+    return 1
+  fi
+
+  if [ -n "$unit" ]; then
+    # A unit rig did not record in .service — a hand-rolled sibling, or an
+    # instance whose directory rig cannot read. svc.sh would not know about it,
+    # so take it down through systemd directly.
+    log "  stopping and disabling ${unit}"
+    if systemctl disable --now "$unit"; then
+      return 0
+    fi
+    warn "runner ${name}: could not disable ${unit} — stop it by hand: systemctl disable --now ${unit}"
+    return 1
+  fi
+
+  log "  no service installed; skipping"
+  return 0
+}
+
 # --- remove one instance ------------------------------------------------------
+# 0 when the runner is fully gone, 1 when the teardown could not finish. The
+# caller carries a non-zero return into the exit status: a removal rig could
+# not complete must not report success, which is the whole of #166.
 remove_one() { # remove_one <name> <dir> <unit>
-  local name="$1" dir="$2" unit="$3" owner
+  local name="$1" dir="$2" unit="$3" owner rc=0
 
   if [ -z "$dir" ] || [ ! -d "$dir" ]; then
-    warn "runner ${name} (${unit}) has no readable directory — rig cannot deregister it"
-    warn "stop and disable it by hand: systemctl disable --now ${unit}"
-    return 0
+    # No directory means no config.sh, so rig genuinely cannot deregister this
+    # one from GitHub. It CAN stop the service — it knows the unit, because the
+    # scan is what found this runner in the first place — and it must: this
+    # path used to print `systemctl disable --now <unit>` for the operator,
+    # never run it, and return 0, so `remove --all` exited successfully with a
+    # discovered runner still taking jobs. That is the exact shape of the bug
+    # this command exists to stop being.
+    warn "runner ${name} (${unit:-unit unknown}) has no readable directory — rig cannot deregister it"
+    stop_service "$name" "" "$unit" || rc=1
+    if [ -n "$unit" ] && [ "$rc" -eq 0 ]; then
+      warn "runner ${name}: service stopped, but it is still registered — delete it from Settings > Actions > Runners"
+    fi
+    [ -n "$unit" ] || warn "runner ${name}: no unit either; find it and take it down by hand"
+    # Incomplete either way: the box has stopped taking jobs on it at best, and
+    # the registration rig was asked to remove is still there.
+    return 1
   fi
   # The unit counts: a hand-rolled sibling whose registration is already gone
   # server-side still has a service taking jobs, and returning here would leave
@@ -172,7 +226,12 @@ remove_one() { # remove_one <name> <dir> <unit>
   if [ "$owner" = "root" ] || [ -z "$owner_home" ]; then
     warn "runner ${name}: ${dir} is owned by '${owner}', which rig will not run config.sh as"
     warn "deregister it by hand from that directory, as its owner"
-    return 0
+    # Same shape as the unreadable directory above: rig will not deregister
+    # this one, but the service is still rig's to stop, and leaving it up while
+    # reporting the runner removed is the failure being fixed. Incomplete, so
+    # non-zero.
+    stop_service "$name" "$dir" "$unit" || true
+    return 1
   fi
 
   log "removing runner ${name} (${dir})"
@@ -193,45 +252,74 @@ remove_one() { # remove_one <name> <dir> <unit>
   # "Uninstall service first" while the service is configured; and `--local`
   # skips that check entirely, which would otherwise strand a running service
   # pointed at config that no longer exists.
-  if [ -e "$dir/.service" ]; then
-    log "  stopping and uninstalling the service"
-    (cd "$dir" && ./svc.sh stop)
-    (cd "$dir" && ./svc.sh uninstall)
-  elif [ -n "$unit" ]; then
-    # A unit rig did not record in .service — a hand-rolled sibling. svc.sh
-    # would not know about it, so take it down through systemd directly.
-    log "  stopping and disabling ${unit}"
-    systemctl disable --now "$unit" || warn "  could not disable ${unit}"
-  else
-    log "  no service installed; skipping"
-  fi
+  stop_service "$name" "$dir" "$unit" || rc=1
 
   if [ -e "$dir/.runner" ]; then
+    local dereg=0
     if [ "$LOCAL" -eq 1 ]; then
       log "  wiping the local registration only (--local)"
-      (cd "$dir" && runuser -u "$owner" -- env HOME="$owner_home" \
-        ./config.sh remove --local)
-      warn "a stale offline runner is still listed in the repo — delete it from Settings > Actions > Runners"
+      if (cd "$dir" && runuser -u "$owner" -- env HOME="$owner_home" \
+        ./config.sh remove --local); then
+        dereg=1
+        warn "a stale offline runner is still listed in the repo — delete it from Settings > Actions > Runners"
+      fi
     else
       log "  deregistering from GitHub"
-      (cd "$dir" && runuser -u "$owner" -- env HOME="$owner_home" \
-        ./config.sh remove --token "$REMOVE_TOKEN")
+      if (cd "$dir" && runuser -u "$owner" -- env HOME="$owner_home" \
+        ./config.sh remove --token "$REMOVE_TOKEN"); then
+        dereg=1
+      fi
     fi
-    rm -f "$dir/.rig-labels"
+    # A failed deregistration is reported and survived, not died on. Under
+    # --all this used to kill the script through `set -e` partway down the
+    # list — one removal token serves one repository, so a box whose runners
+    # span two repos took the first few down and left the rest untouched, with
+    # the failure landing mid-teardown. The exit status carries it now, so
+    # every remaining target still gets its turn.
+    if [ "$dereg" -eq 0 ]; then
+      warn "runner ${name}: deregistration failed — its registration is still in the repo"
+      warn "  a removal token is per-repository and short-lived; --local wipes the box side without one"
+      rc=1
+    else
+      rm -f "$dir/.rig-labels"
+    fi
   fi
 
   # .rig-instance stays. It is the name, not the registration: the binary is
   # deliberately left behind for the next install, and that install has to find
   # THIS directory rather than build a sibling beside it.
-  log "  runner ${name} removed; the binary stays at ${dir} for a future rig runner install"
+  if [ "$rc" -eq 0 ]; then
+    log "  runner ${name} removed; the binary stays at ${dir} for a future rig runner install"
+  else
+    warn "runner ${name}: removal did not finish — see the warnings above"
+  fi
+  return "$rc"
 }
 
+# The heredoc, not a pipe: the loop must run in THIS shell so INCOMPLETE
+# survives it. Every target gets its turn even when one fails, and the failures
+# are collected rather than thrown away.
+INCOMPLETE=""
 while IFS= read -r line; do
   [ -n "$line" ] || continue
+  RNAME="$(printf '%s' "$line" | cut -f1)"
   remove_one \
-    "$(printf '%s' "$line" | cut -f1)" \
+    "$RNAME" \
     "$(printf '%s' "$line" | cut -f2)" \
-    "$(printf '%s' "$line" | cut -f3)"
+    "$(printf '%s' "$line" | cut -f3)" \
+  || INCOMPLETE="${INCOMPLETE}  ${RNAME}
+"
 done <<EOF
 $TARGETS
 EOF
+
+# A teardown that could not finish is not a success. Exiting 0 here — with a
+# service still up, or a registration still live in the repo — is precisely the
+# command that looks like it did the whole job (#166).
+if [ -n "$INCOMPLETE" ]; then
+  printf 'rig-runner: ERROR: %s\n' \
+"these runners did not come down completely:
+${INCOMPLETE%$'\n'}
+rig runner status shows what is still on this box." >&2
+  exit 1
+fi
