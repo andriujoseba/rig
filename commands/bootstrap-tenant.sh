@@ -233,6 +233,60 @@ append_line_once() {
   chown "$TENANT_USER:$TENANT_GROUP" "$file"
 }
 
+# converge_user_crontab_assignment <key> <value> — put one environment
+# assignment at the start of this tenant's crontab, preserving every job and
+# unrelated assignment. Crew's installer preserves non-tick lines when it
+# arms the duty engine, so the tenant-only carrier survives later hires.
+converge_user_crontab_assignment() {
+  local key="$1" value="$2" current desired
+  current="$(mktemp)"
+  desired="$(mktemp)"
+  crontab -u "$TENANT_USER" -l > "$current" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$value" > "$desired"
+  awk -v key="$key" '
+    $0 !~ "^[[:space:]]*" key "[[:space:]]*=" { print }
+  ' "$current" >> "$desired"
+  if ! cmp -s "$desired" "$current"; then
+    crontab -u "$TENANT_USER" "$desired"
+    log "converged ${key} in ${TENANT_USER}'s crontab"
+  fi
+  rm -f "$current" "$desired"
+}
+
+# The agent workload's scratch belongs on the box disk, not its RAM-backed
+# /tmp. 0700 gives the tenant the private-directory equivalent of /tmp's full
+# rwx access; the sticky bit is unnecessary because no other user may enter.
+# `.profile` carries bash login shells and `.zshenv` carries the zsh login
+# shell installed by claude-box. The tenant's own crontab carries unattended
+# duty ticks without changing root or peer-user PAM environments.
+converge_tenant_tmpdir() {
+  local tenant_tmpdir="$TENANT_HOME/tmp" tenant_tmp_fstype
+  if [ -L "$tenant_tmpdir" ] || { [ -e "$tenant_tmpdir" ] && [ ! -d "$tenant_tmpdir" ]; }; then
+    die "tenant scratch path exists but is not a directory: ${tenant_tmpdir} (#164)"
+  fi
+  install -d -m 0700 -o "$TENANT_USER" -g "$TENANT_GROUP" "$tenant_tmpdir"
+  [ "$(stat -c '%U:%G %a' "$tenant_tmpdir")" = "$TENANT_USER:$TENANT_GROUP 700" ] \
+    || die "tenant scratch directory is not ${TENANT_USER}:${TENANT_GROUP} mode 700: ${tenant_tmpdir} (#164)"
+  runuser -u "$TENANT_USER" -- test -w "$tenant_tmpdir" \
+    || die "tenant scratch directory is not writable by ${TENANT_USER}: ${tenant_tmpdir} (#164)"
+  tenant_tmp_fstype="$(df -PT "$tenant_tmpdir" | awk 'NR == 2 { print $2 }')"
+  case "$tenant_tmp_fstype" in
+    ""|tmpfs|ramfs)
+      die "tenant scratch directory is not disk-backed (${tenant_tmp_fstype:-unknown}): ${tenant_tmpdir} (#164)"
+      ;;
+  esac
+  # $HOME expands in the tenant's login shell, not during root's converge.
+  # shellcheck disable=SC2016
+  append_line_once "$TENANT_HOME/.profile" 'export TMPDIR="$HOME/tmp"'
+  # shellcheck disable=SC2016
+  append_line_once "$TENANT_HOME/.zshenv" 'export TMPDIR="$HOME/tmp"'
+  # shellcheck disable=SC2016  # expanded by the tenant's login shell
+  runuser -l "$TENANT_USER" -c '[ "$TMPDIR" = "$HOME/tmp" ]' \
+    || die "tenant login shell does not inherit TMPDIR=${tenant_tmpdir} (#164)"
+  converge_user_crontab_assignment TMPDIR "$tenant_tmpdir"
+  log "tenant TMPDIR is disk-backed at ${tenant_tmpdir} (${tenant_tmp_fstype})"
+}
+
 # The binary on PATH is not the effective state — an image can ship crontab
 # with cron.service masked or stopped, and an unarmed timer is exactly the
 # silent-inert box #162 is about. Converge best-effort, then assert what
@@ -401,6 +455,9 @@ if [ "$ROLE" != "staging-box" ]; then
   # PATH_LINE is DATA, appended verbatim: it must expand in the USER's
   # shell, not here.
   append_line_once "$TENANT_HOME/.bashrc" "$TPL_PATH_LINE"
+  # The definition's installer may change the login shell (claude-box changes
+  # it to zsh), so converge and assert TMPDIR only after that installer ran.
+  converge_tenant_tmpdir
 fi
 
 # --- the agent-context file --------------------------------------------------
