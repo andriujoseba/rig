@@ -5,18 +5,17 @@ name: labels
 # permissions (a called workflow cannot define them), its path map in
 # .github/labeler.yml, and its panel + scope taxonomy in .github/labels.conf.
 on:
-  schedule: [{cron: "*/15 * * * *"}] # advisory; the handoff label is the real wake
-  workflow_dispatch:                 # bootstraps missing labels on a fresh repo
   pull_request_target:
     types: [opened, reopened, ready_for_review, converted_to_draft, synchronize, labeled, unlabeled, review_requested, review_request_removed]
   issues:
-    types: [opened, edited, assigned, unassigned, labeled, unlabeled, closed, reopened]
+    types: [opened, closed, edited, reopened]
 permissions:
   contents: read
   checks: read
   statuses: read
+  actions: write
   issues: write
   pull-requests: write
 jobs:
   labels:
-    uses: heavy-duty/ceremony/.github/workflows/labels.yml@0.3.0
+    uses: heavy-duty/ceremony/.github/workflows/labels.yml@0.7.4

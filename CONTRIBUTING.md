@@ -101,7 +101,7 @@ corrected on the next pass:
 
 | Labels | Set by |
 |---|---|
-| `state:*` | the labels workflow ([.github/workflows/labels.yml](.github/workflows/labels.yml)) — recomputed from GitHub's own facts on PR events (label changes included) and every 15 minutes. Machine-owned, with one exception: the author sets `state:needs-human` at handoff and the workflow reconciles it. Otherwise never by hand. Exactly one per PR: *whose ball is it.* |
+| `state:*` | the labels workflows ([.github/workflows/labels.yml](.github/workflows/labels.yml), [`.github/workflows/labels-sweep.yml`](.github/workflows/labels-sweep.yml)) — event-triggered reconciliation is dispatched in seconds, with an hourly sweep for transitions that have no event wake. Machine-owned, with one exception: the author sets `state:needs-human` at handoff and the workflow reconciles it. Otherwise never by hand. Exactly one per PR: *whose ball is it.* |
 | `blocker:*` | the same workflow, from the same facts — *what is in the way.* Any number per PR, or none. Never by hand: applying one does not stop a merge, and removing one does not unblock anything. Fix the thing and the next sweep drops the label. |
 | `stale` | the same workflow — 48h without commits, comments, or reviews. `blocked` PRs are exempt: they are quiet legitimately. |
 | `scope:*` on PRs | actions/labeler, from the changed paths ([.github/labeler.yml](.github/labeler.yml)). Additive — you may add more, the machine won't remove them. |
