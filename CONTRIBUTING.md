@@ -15,11 +15,15 @@ genuinely rig's.
 
 1. **Fork and branch.** Contributors work from forks; upstream branches are
    for maintainers. Title the PR conventionally (`feat:`, `fix:`, `docs:`).
-2. **The review panel** (`.github/labels.conf`'s `panel=` line):
-   `claude-bot-andresmgsl`, `codex-bot-andresmgsl`, `grok-bot-andresmgsl`,
-   `kimi-bot-andresmgsl` —
-   the required verdicts for a PR are the panel minus its author. The
-   maintainer (`danmt`) takes the last word and merges.
+2. **The review panel.** [`.github/labels.conf`](.github/labels.conf) is the
+   governing roster: use `panel[<your-login>]=` when that row exists,
+   otherwise `panel=`, then remove the author. In rig the builder marks the
+   PR ready, waits for a green head, and requests that resolved panel. The
+   labels workflow requests no panelist; its only reviewer request is the
+   human at handoff ([reconciler](https://github.com/heavy-duty/ceremony/blob/c64e06689356204c24dd1de35c505b0508070453/actions/labels-reconcile/labels-reconcile.sh#L930-L932)).
+   This is rig's answer to BUILDER.md's conditional
+   [engine-mediated request rule](.ceremony/BUILDER.md#the-review-round).
+   The maintainer (`danmt`) takes the last word and merges.
 3. **Checks must be green**: `shellcheck`, `bash test/cli.sh` and
    `bash test/release.sh` locally mirror what CI runs; the db dump/restore
    round-trip (`test/db-integration.sh`) executes in CI where Docker is
@@ -113,7 +117,7 @@ corrected on the next pass:
 | Labels | Set by |
 |---|---|
 | `state:*` | the labels workflows ([.github/workflows/labels.yml](.github/workflows/labels.yml), [`.github/workflows/labels-sweep.yml`](.github/workflows/labels-sweep.yml)) — event-triggered reconciliation is dispatched in seconds, with an hourly sweep for transitions that have no event wake. Machine-owned, with one exception: the author sets `state:needs-human` at handoff and the workflow reconciles it. Otherwise never by hand. Exactly one per PR: *whose ball is it.* |
-| `blocker:*` | the same workflow, from the same facts — *what is in the way.* Any number per PR, or none. Never by hand: applying one does not stop a merge, and removing one does not unblock anything. Fix the thing and the next sweep drops the label. |
+| `blocker:*` | the same workflow, from the same facts — *what is in the way.* Any number per PR, or none. Never by hand: applying one does not stop a merge, and removing one does not unblock anything. Fix the thing and the next sweep drops the label; for `blocker:unrequested`, the thing is the missing panel request and the builder owes that act. |
 | `stale` | the same workflow — 48h without commits, comments, or reviews. `blocked` PRs are exempt: they are quiet legitimately. |
 | `scope:*` on PRs | actions/labeler, from the changed paths ([.github/labeler.yml](.github/labeler.yml)). Additive — you may add more, the machine won't remove them. |
 | `scope:*` on issues | you, when opening or triaging — issues have no paths to derive from. |
