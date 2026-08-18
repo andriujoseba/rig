@@ -1144,6 +1144,12 @@ those runners; this one verb does not.
 > `--rename` carries the old meaning. A rename moves the identity and not the
 > directory: the instance stays where it is on disk, nothing is
 > re-downloaded, and rig answers to the new name from then on.
+>
+> A name another instance on the box already answers to is **refused**, before
+> a token is asked for and before anything comes down — so you retype it with
+> the runner still registered and still taking jobs. Dormant directories count:
+> one an earlier `remove` left behind holds its name just as firmly, and
+> `status` does not list it, so nothing else on the box would warn you.
 
 This is the verb that was missing. `runner install` can create a runner but
 never move one — pointed at a repo the box is not on, it fails and sends you
@@ -1167,7 +1173,8 @@ prints the exact `runner install` line that finishes the job.
 
 Convergent — repointing to the repo it is already on changes nothing, exits 0,
 and never asks for a token, unless `--rename` asks for a change: that is a
-re-registration and needs both tokens.
+re-registration and needs both tokens. `--rename` naming the name the instance
+already has is not a change, and converges with the rest.
 
 ### `rig users apply --file <path>`
 

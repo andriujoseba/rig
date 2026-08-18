@@ -67,11 +67,15 @@ to the ci-runner default and says so. Check your workflows' runs-on.
 
 --rename keeps the instance where it is on disk and changes what it is
 called: the directory keeps the old name, and the name rig answers to is the
-new one. Nothing is re-downloaded.
+new one. Nothing is re-downloaded. A name another instance on this box
+already answers to is refused before a token is asked for and before
+anything comes down — including one held by a directory an earlier remove
+left behind, which `status` does not list.
 
 Convergent: repointing to the repo it is already on changes nothing, exits 0,
 and never asks for a token — unless --rename asks for a change, which is a
-re-registration and needs both.
+re-registration and needs both. --rename naming the name it already has is
+not a change.
 EOF
 }
 
