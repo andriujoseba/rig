@@ -1747,6 +1747,29 @@ check "managed: install refuses to register over the hand-rolled one" \
 check "managed: ...and still converges its own" \
   0 "${UNDER_BASE_BOX}/mine	mine" resolve "$UNDER_BASE_BOX" mine 1 "$UNDER_BASE_UNITS"
 
+# Round 2 of #174, non-blocking: the refusal above is by NAME, and there is a
+# second door. A hand-rolled <base>/theirs registered as `other` is correctly
+# refused as --name other — but --name theirs matched no instance, fell through
+# to the new-instance branch, found a directory that IS an install, and rig
+# wrote its marker into a directory it did not create. Nothing was
+# deregistered (assert_runner_repo catches a different repo first); what was
+# wrong is rig claiming somebody else's install as its own.
+ADOPT_DIR_BOX="$(mktemp -d)"
+mkdir -p "$ADOPT_DIR_BOX/theirs"
+printf '%s\n' '{"agentId":9,"agentName":"other","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' \
+  > "$ADOPT_DIR_BOX/theirs/.runner"
+: > "$ADOPT_DIR_BOX/theirs/config.sh"
+check "adopt: the name it registered under is refused, as it always was" \
+  1 "taken by a runner rig did not create" resolve "$ADOPT_DIR_BOX" other 1
+check "adopt: its DIRECTORY name is refused too, which used to fall through" \
+  1 "rig did not create" resolve "$ADOPT_DIR_BOX" theirs 1
+check "adopt: that refusal says what the directory actually answers to" \
+  1 "'other'" resolve "$ADOPT_DIR_BOX" theirs 1
+# The guard is about occupied directories, not about the box: a free name on
+# the same box still resolves to a new instance.
+check "adopt: a free name on that box is a new instance as before" \
+  0 "${ADOPT_DIR_BOX}/ours	ours" resolve "$ADOPT_DIR_BOX" ours 1
+
 # --- one instance, one line ---------------------------------------------------
 # Round 1 of #174, non-blocking: the merge deduped on the directory alone, so a
 # unit whose WorkingDirectory differs from the walk's path by a single
@@ -1985,6 +2008,141 @@ check "remove: ...and it says so rather than dying silently" \
 check "status: the same empty box does not die silently either" \
   1 "" env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" \
   SYSTEMCTL_LOG="$SYSTEMCTL_LOG" "$ROOT/commands/runner-status.sh"
+
+# --- repoint --rename, executed: refused BEFORE the runner comes down ---------
+# Round 2 of #174, all three reviewers. --rename was validated for syntax only,
+# so a rename onto a name the box already used was discovered by the resolver
+# AFTER the teardown: stop, uninstall, deregister, rewrite .rig-instance, and
+# only then the refusal. That left the runner registered nowhere and reachable
+# by neither name — the marker rewrite survives the failure, so the old name no
+# longer finds the directory and the new one is ambiguous — with the recovery
+# command the failure printed hitting the same wall.
+#
+# Executed, not grepped, and for the reason round 1 established: the assertion
+# that matters is that NOTHING RAN, and no grep on the source can say that. The
+# stub svc.sh/config.sh record every call, so an empty log is the evidence.
+cat > "$STUBS/chown" <<'STUB'
+#!/usr/bin/env bash
+# The harness is not root. Which user owns a fixture file is not what anything
+# below asserts on — every one of them reads content back.
+exit 0
+STUB
+chmod +x "$STUBS/chown"
+
+BASE=""
+mkinstance() { # mkinstance <base> <name> registered|dormant
+  local d="$1/$2"
+  mkdir -p "$d/bin"
+  # Present so `install` skips the download: this box has no network, and the
+  # binary being re-used rather than re-fetched is the point of a move.
+  : > "$d/bin/Runner.Listener"
+  printf '%s\n' "$2" > "$d/.rig-instance"
+  printf '%s\n' 'self-hosted,linux' > "$d/.rig-labels"
+  if [ "$3" = registered ]; then
+    printf '%s\n' "{\"agentId\":7,\"agentName\":\"${2}\",\"gitHubUrl\":\"https://github.com/acme/alpha\",\"workFolder\":\"_work\"}" \
+      > "$d/.runner"
+    # A registered instance has a service; a dormant one must NOT, or the unit
+    # alone would make it live and the dormant-collision case would not exist.
+    printf 'actions.runner.acme-alpha.%s.service\n' "$2" > "$d/.service"
+  fi
+  cat > "$d/svc.sh" <<'SVC'
+#!/usr/bin/env bash
+printf 'svc %s %s\n' "$1" "${PWD##*/}" >> "$SVC_LOG"
+SVC
+  # Both halves of the lifecycle, because a move runs both: `remove` wipes the
+  # registration, a register writes one naming the repo it was given.
+  cat > "$d/config.sh" <<'CFG'
+#!/usr/bin/env bash
+printf 'config %s %s\n' "$1" "${PWD##*/}" >> "$SVC_LOG"
+if [ "$1" = remove ]; then rm -f ./.runner; exit 0; fi
+url=""; name=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --url)  url="$2";  shift 2 ;;
+    --name) name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '{"agentId":7,"agentName":"%s","gitHubUrl":"%s","workFolder":"_work"}\n' \
+  "$name" "$url" > ./.runner
+CFG
+  chmod +x "$d/svc.sh" "$d/config.sh"
+}
+mkmulti() { # mkmulti <state of the sibling> — a box running `old` beside `taken`
+  FAKE_HOME="$(mktemp -d)"
+  BASE="$FAKE_HOME/actions-runner"
+  mkdir -p "$BASE"
+  mkinstance "$BASE" old registered
+  mkinstance "$BASE" taken "$1"
+  : > "$SVC_LOG"
+}
+# Tokens in the environment on purpose: with them present the ONLY thing that
+# can stop the teardown is the guard under test. Without them the command would
+# refuse for the wrong reason and the test would pass on a broken tree.
+repoint_run() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    RUNNER_REMOVE_TOKEN=removal-token RUNNER_TOKEN=registration-token \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+# ...and the convergence case runs with NO tokens and no tty, so a teardown it
+# should not have started dies naming the variable instead of prompting.
+repoint_bare() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+
+mkmulti registered
+check "repoint --rename: a name a live sibling holds is refused" \
+  1 "already belongs to a runner on this box" \
+  repoint_run --repo acme/new --name old --rename taken
+check "repoint --rename: ...the refusal names the sibling it would collide with" \
+  1 "${BASE}/taken" repoint_run --repo acme/new --name old --rename taken
+check "repoint --rename: ...and nothing was stopped, uninstalled or deregistered" \
+  1 "" test -s "$SVC_LOG"
+check "repoint --rename: ...the runner is still registered where it was" \
+  0 "acme/alpha" cat "$BASE/old/.runner"
+check "repoint --rename: ...and still answers to its own name" \
+  0 "old" cat "$BASE/old/.rig-instance"
+
+# A directory an earlier `remove` left behind holds the name just as firmly —
+# its .rig-instance is what the install at the far end resolves against — and
+# `status` filters it out, so nothing on the box warns you first.
+mkmulti dormant
+check "repoint --rename: a name a DORMANT sibling holds is refused too" \
+  1 "already belongs to a runner on this box" \
+  repoint_run --repo acme/new --name old --rename taken
+check "repoint --rename: ...and that one is not stopped either" \
+  1 "" test -s "$SVC_LOG"
+
+# The other half of the same gap: --rename asking for the name the instance
+# already has is not a change, and the help promises it converges. The test was
+# whether the FLAG was passed, so it took the full teardown to re-register the
+# runner as itself.
+mkmulti registered
+check "repoint --rename to the name it already has: converges, exit 0" \
+  0 "nothing to do" repoint_bare --repo acme/alpha --name old --rename old
+check "repoint --rename: ...without asking for a token or touching the service" \
+  1 "" test -s "$SVC_LOG"
+
+# ...and the guard must not refuse everything: a rename to a free name still
+# moves the runner, in place, re-using the binary.
+mkmulti registered
+check "repoint --rename to a free name still moves the runner" \
+  0 "repointed to https://github.com/acme/new" \
+  repoint_run --repo acme/new --name old --rename fresh --local
+check "repoint --rename: ...the service came down in the instance's own directory" \
+  0 "" grep -qx 'svc stop old' "$SVC_LOG"
+check "repoint --rename: ...and came back up there, nothing re-downloaded" \
+  0 "" grep -qx 'svc start old' "$SVC_LOG"
+check "repoint --rename: ...it answers to the new name now" \
+  0 "fresh" cat "$BASE/old/.rig-instance"
+check "repoint --rename: ...and is registered to the new repo under it" \
+  0 "acme/new" cat "$BASE/old/.runner"
+check "repoint --rename: ...as the new name, not the old one" \
+  0 "\"agentName\":\"fresh\"" cat "$BASE/old/.runner"
+FAKE_HOME=""
 
 # --- names as path components --------------------------------------------------
 check "name: an ordinary name is valid"     0 "" lib runner_valid_name ci-1
