@@ -2,6 +2,11 @@
 # rig runner repoint — move an installed runner from one repository to another.
 # Deregister, then re-register against the new repo, reusing the binary that is
 # already on the box.
+#
+# Selects ONE instance (#166). The old command moved whichever runner lived in
+# the legacy directory and reported success while the box's other three kept
+# taking jobs from the old repo — which is the bug, not the missing feature.
+# On a box running several, --name is required.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -17,7 +22,10 @@ usage() {
 usage: rig runner repoint --repo <owner/repo> [options]
 
   --repo <owner/repo>   the repository to move the runner TO (required)
-  --name <name>         runner name (default: keep the name it has now)
+  --name <name>         which runner to move; required when this box runs
+                        more than one
+  --rename <name>       give it a new name at the far end (default: keep the
+                        name it has now)
   --labels <csv>        runner labels (default: the labels rig recorded at
                         install; else ci-runner)
   --user <name>         unprivileged service user (default: github-runner)
@@ -28,6 +36,11 @@ usage: rig runner repoint --repo <owner/repo> [options]
 Deregisters the runner from the repository it is on now and registers it
 against --repo. The runner binary, its user, and its systemd service are
 reused, so nothing is downloaded.
+
+WHICH RUNNER. With one runner on the box, --name is optional and that runner
+is the one. With several, its absence is refused with the list: moving one of
+four and reporting success is what this flag exists to stop.
+`rig runner status` lists them.
 
 Two short-lived tokens, each minted from its OWN repository:
 
@@ -47,14 +60,20 @@ does not persist them. rig records what it registered with, but a runner
 installed before rig did that has nothing to read — repoint then falls back
 to the ci-runner default and says so. Check your workflows' runs-on.
 
+--rename keeps the instance where it is on disk and changes what it is
+called: the directory keeps the old name, and the name rig answers to is the
+new one. Nothing is re-downloaded.
+
 Convergent: repointing to the repo it is already on changes nothing, exits 0,
-and never asks for a token.
+and never asks for a token — unless --rename asks for a change, which is a
+re-registration and needs both.
 EOF
 }
 
 # --- args (validated before the root check, so errors are testable) ---------
 REPO=""
-RUNNER_NAME=""
+WANT_NAME=""
+NEW_NAME=""
 LABELS=""
 RUNNER_USER="github-runner"
 LOCAL=0
@@ -65,7 +84,10 @@ while [ $# -gt 0 ]; do
       REPO="$2"; shift 2 ;;
     --name)
       [ $# -ge 2 ] || die "--name needs a value" 2
-      RUNNER_NAME="$2"; shift 2 ;;
+      WANT_NAME="$2"; shift 2 ;;
+    --rename)
+      [ $# -ge 2 ] || die "--rename needs a value" 2
+      NEW_NAME="$2"; shift 2 ;;
     --labels)
       [ $# -ge 2 ] || die "--labels needs a value" 2
       LABELS="$2"; shift 2 ;;
@@ -84,6 +106,9 @@ if ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
   die "--repo must be owner/repo" 2
 fi
 [ "$RUNNER_USER" != "root" ] || die "runner user must not be root" 2
+if [ -n "$NEW_NAME" ] && ! runner_valid_name "$NEW_NAME"; then
+  die "--rename must be letters, digits, dot, underscore or dash, and start with a letter or digit: '${NEW_NAME}'" 2
+fi
 
 # --- guards ----------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -91,7 +116,38 @@ fi
 id -u "$RUNNER_USER" >/dev/null 2>&1 \
   || die "no runner installed (no ${RUNNER_USER} user) — use: rig runner install"
 USER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
-RUNNER_DIR="$USER_HOME/actions-runner"
+BASE_DIR="$(runner_base_dir "$USER_HOME")"
+
+# --- which runner? -----------------------------------------------------------
+INSTANCES="$(runner_scan_units | runner_merge_instances "$BASE_DIR")"
+COUNT="$(runner_count "$INSTANCES")"
+
+[ "$COUNT" -gt 0 ] \
+  || die "no runner on this box (nothing under ${BASE_DIR}, no actions.runner.* unit) — use: rig runner install"
+
+if [ -n "$WANT_NAME" ]; then
+  if ! LINE="$(runner_pick "$WANT_NAME" "$INSTANCES")"; then
+    die "no runner named '${WANT_NAME}' on this box. It runs:
+$(runner_candidates "$INSTANCES")"
+  fi
+  if [ "$(runner_count "$LINE")" -ne 1 ]; then
+    die "more than one runner on this box answers to '${WANT_NAME}':
+$(runner_candidates "$LINE")
+rig will not guess which one you meant."
+  fi
+elif [ "$COUNT" -eq 1 ]; then
+  LINE="$INSTANCES"
+else
+  die "this box runs ${COUNT} runners — say which one to move:
+$(runner_candidates "$INSTANCES")
+  rig runner repoint --repo ${REPO} --name <name>"
+fi
+
+RUNNER_NAME="$(printf '%s' "$LINE" | cut -f1)"
+RUNNER_DIR="$(printf '%s' "$LINE" | cut -f2)"
+
+[ -n "$RUNNER_DIR" ] \
+  || die "runner ${RUNNER_NAME} has no readable directory on this box — rig cannot move it"
 [ -e "$RUNNER_DIR/.runner" ] \
   || die "no runner registered in ${RUNNER_DIR} — use: rig runner install"
 
@@ -99,15 +155,9 @@ RUNNER_DIR="$USER_HOME/actions-runner"
 CURRENT_URL="$(runner_repo_url "$RUNNER_DIR")"
 TARGET_URL="https://github.com/${REPO}"
 
-if [ "$CURRENT_URL" = "$TARGET_URL" ]; then
-  log "already registered to ${REPO}; nothing to do"
+if [ "$CURRENT_URL" = "$TARGET_URL" ] && [ -z "$NEW_NAME" ]; then
+  log "runner ${RUNNER_NAME} is already registered to ${REPO}; nothing to do"
   exit 0
-fi
-
-# Keep the runner's identity across the move unless told otherwise.
-if [ -z "$RUNNER_NAME" ]; then
-  RUNNER_NAME="$(runner_agent_name "$RUNNER_DIR")"
-  [ -n "$RUNNER_NAME" ] || die "could not read the current runner name from ${RUNNER_DIR}/.runner"
 fi
 if [ -z "$LABELS" ]; then
   if [ -r "$RUNNER_DIR/.rig-labels" ]; then
@@ -120,8 +170,13 @@ if [ -z "$LABELS" ]; then
   fi
 fi
 
-log "moving runner ${RUNNER_NAME} from ${CURRENT_URL} to ${TARGET_URL}"
+FINAL_NAME="${NEW_NAME:-$RUNNER_NAME}"
+log "moving runner ${RUNNER_NAME} (${RUNNER_DIR}) from ${CURRENT_URL} to ${TARGET_URL}"
+[ "$FINAL_NAME" = "$RUNNER_NAME" ] || log "renaming it to ${FINAL_NAME}"
 log "labels: ${LABELS}"
+if [ "$COUNT" -gt 1 ]; then
+  log "this box runs ${COUNT} runners; the other $((COUNT - 1)) are not touched"
+fi
 
 # --- tokens, both up front --------------------------------------------------
 # Collected before anything is torn down: a missing or expired token must fail
@@ -149,16 +204,28 @@ fi
 export RUNNER_TOKEN
 
 # --- move -------------------------------------------------------------------
-REMOVE_ARGS=(--user "$RUNNER_USER")
+# By name in both directions: on a box running several, an unselected remove
+# would take the wrong one down and an unselected install would build a
+# sibling. remove keeps .rig-instance precisely so the install below resolves
+# the name back to THIS directory and re-uses the binary already in it.
+REMOVE_ARGS=(--user "$RUNNER_USER" --name "$RUNNER_NAME")
 [ "$LOCAL" -eq 1 ] && REMOVE_ARGS+=(--local)
 "$HERE/runner-remove.sh" "${REMOVE_ARGS[@]}"
 
-if ! "$HERE/runner-install.sh" \
-  --repo "$REPO" --name "$RUNNER_NAME" --labels "$LABELS" --user "$RUNNER_USER"
-then
-  warn "the runner is now deregistered from ${CURRENT_URL} and NOT registered anywhere"
-  die "re-registration failed — fix the cause, then run: rig runner install --repo ${REPO} --name ${RUNNER_NAME} --labels ${LABELS} --user ${RUNNER_USER}"
+# A rename moves the identity, not the directory: install resolves --name
+# through .rig-instance, so writing the new name here is what makes it land in
+# the directory that already holds the binary instead of a fresh sibling.
+if [ "$FINAL_NAME" != "$RUNNER_NAME" ]; then
+  printf '%s\n' "$FINAL_NAME" > "$RUNNER_DIR/.rig-instance"
+  chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR/.rig-instance" 2>/dev/null || true
 fi
 
-log "repointed to ${TARGET_URL}"
+if ! "$HERE/runner-install.sh" \
+  --repo "$REPO" --name "$FINAL_NAME" --labels "$LABELS" --user "$RUNNER_USER"
+then
+  warn "runner ${FINAL_NAME} is now deregistered from ${CURRENT_URL} and NOT registered anywhere"
+  die "re-registration failed — fix the cause, then run: rig runner install --repo ${REPO} --name ${FINAL_NAME} --labels ${LABELS} --user ${RUNNER_USER}"
+fi
+
+log "runner ${FINAL_NAME} repointed to ${TARGET_URL}"
 log "verify it shows Idle under that repo's Settings > Actions > Runners, and gone from the old one"
