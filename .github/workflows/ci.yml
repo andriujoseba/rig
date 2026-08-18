@@ -7,7 +7,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # changelog-monotonic and changelog-assembled compare HEAD against
           # the merge base; a
@@ -47,7 +47,7 @@ jobs:
         run: bash test/drill.sh
       # The release guards, doctrine in heavy-duty/ceremony's README (#13's
       # conversion). Each one's war story — why it exists, what it refuses —
-      # lives with its implementation upstream; the six pins below and the
+      # lives with its implementation upstream; the seven pins below and the
       # two workflow callers must always name the same ceremony tag.
       #
       # changelog-armed: the version-keyed arming rule (rig#66; the
@@ -66,6 +66,9 @@ jobs:
       # runner-isolated: PR-triggered workflows never execute unreviewed
       # branch code on a self-hosted runner.
       - uses: heavy-duty/ceremony/actions/runner-isolated@0.7.4
+      # sha-pinned: third-party actions use immutable commit SHAs with readable
+      # version comments; heavy-duty-owned references keep one release pin.
+      - uses: heavy-duty/ceremony/actions/sha-pinned@0.7.4
       # docs-sync: the .ceremony/ doctrine mirror is byte-identical to the
       # pin read from release.yml (ceremony#19) — a hand edit or a
       # half-done pin bump goes red here.
@@ -82,7 +85,7 @@ jobs:
   install:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: the install lifecycle — four beats against a real tree
         run: bash test/install-lifecycle.sh
 
@@ -95,6 +98,6 @@ jobs:
   db-integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: db dump/restore round-trip
         run: bash test/db-integration.sh
