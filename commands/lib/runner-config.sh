@@ -78,31 +78,202 @@ runner_agent_name() {
   json_field "$1/.runner" agentName
 }
 
-# assert_runner_repo <runner_dir> <owner/repo>
+# --- instances (#166) --------------------------------------------------------
+# A box runs any number of runners. The NAME is the key and the box is not: an
+# instance is a directory holding one actions/runner install, one _work, one
+# systemd unit. Two layouts coexist on purpose:
 #
-# Returns 0 when the box has no runner, or has one already registered to
-# <owner/repo>: re-running `install` against the repo the box is already on is
-# real convergence — it re-uses the binary, skips registration, exits 0.
+#   <base>          — the LEGACY single-instance layout, the only one rig could
+#                     ever create. Every box installed before this exists is
+#                     this shape, and it is adopted in place: never moved,
+#                     never re-registered, never re-downloaded.
+#   <base>/<name>   — one directory per named instance, the layout rig creates
+#                     from now on. Siblings of the legacy dir, which is why a
+#                     name that collides with the tarball's own top-level
+#                     entries is refused rather than unpacked over.
 #
-# Returns 1, explaining itself on stderr, when the runner is registered to a
+# where <base> is the runner user's ~/actions-runner.
+
+# runner_base_dir <user_home> — where this user's instances live.
+runner_base_dir() { printf '%s' "$1/actions-runner"; }
+
+# runner_is_instance_dir <dir> — 0 when <dir> holds a runner install.
+#
+# `.runner` (registered) OR `config.sh` (unpacked, maybe deregistered): remove
+# takes the registration away and deliberately leaves the binary, so a dir that
+# only had `.runner` to prove itself would vanish from every listing the moment
+# it was removed — and `install` would then create a SIBLING beside the binary
+# it was meant to re-use.
+runner_is_instance_dir() {
+  [ -e "$1/.runner" ] || [ -e "$1/config.sh" ]
+}
+
+# runner_instance_name <dir> — the name of the instance in <dir>.
+#
+# Three sources, in falling order of authority: `.rig-instance` (what rig
+# registered it AS, and the only one that survives a `remove`), the runner's
+# own `.runner`, then the directory name. The last is the legacy dir's answer
+# when it holds neither — it reads "actions-runner", which is honest: that box
+# never told anyone a name.
+runner_instance_name() {
+  local name=""
+  [ -r "$1/.rig-instance" ] && name="$(head -n1 "$1/.rig-instance")"
+  [ -n "$name" ] || name="$(runner_agent_name "$1")"
+  [ -n "$name" ] || name="$(basename "$1")"
+  printf '%s' "$name"
+}
+
+# runner_dir_unit <dir> — the systemd unit svc.sh recorded, empty when the
+# instance was never installed as a service.
+runner_dir_unit() {
+  [ -r "$1/.service" ] || return 0
+  head -n1 "$1/.service"
+}
+
+# runner_unit_name <unit> — the runner name inside an actions.runner.* unit.
+#
+# svc.sh names units `actions.runner.<owner>-<repo>.<name>.service`, so the
+# name is what follows the last dot. A repository or a runner name containing
+# a dot defeats that — which is why this is the LAST fallback, used only for a
+# unit whose directory rig cannot read.
+runner_unit_name() {
+  local u="${1#actions.runner.}"
+  u="${u%.service}"
+  printf '%s' "${u##*.}"
+}
+
+# runner_valid_name <name> — 0 when <name> is usable as a directory name.
+# Deliberately narrower than the filesystem: a name is a path component here,
+# and `..`, a slash, or a leading dot would each escape or hide the instance.
+runner_valid_name() {
+  printf '%s' "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+}
+
+# runner_scan_units — one "unit<TAB>dir" line per actions.runner.* service this
+# box's systemd knows about, whether rig created it or not.
+#
+# This is the migration rule from #166, and the reason discovery reads systemd
+# rather than a registry rig maintains: a box with three hand-rolled siblings
+# beside rig's one must SHOW all four. A registry would only ever list rig's,
+# and `status` reporting one of four is the actual bug — a command that looks
+# like it did the whole job.
+#
+# Prints nothing where there is no systemd, so every caller degrades to "rig's
+# own instances only" rather than dying.
+runner_scan_units() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local unit dir
+  { systemctl list-units --all --no-legend --plain --type=service 'actions.runner.*' 2>/dev/null || true
+    systemctl list-unit-files --no-legend --plain --type=service 'actions.runner.*' 2>/dev/null || true
+  } | awk '{ print $1 }' | grep -E '^actions\.runner\..*\.service$' | sort -u \
+  | while read -r unit; do
+      dir="$(systemctl show -p WorkingDirectory --value "$unit" 2>/dev/null || true)"
+      printf '%s\t%s\n' "$unit" "$dir"
+    done
+}
+
+# runner_merge_instances <base>  (stdin: runner_scan_units' "unit<TAB>dir" lines)
+#
+# The whole instance list for a box, one line each:
+#   <name><TAB><dir><TAB><unit><TAB>managed|unmanaged
+#
+# rig's own instances first — the legacy <base> when it holds one, then every
+# <base>/<name> — followed by every scanned unit whose WorkingDirectory is none
+# of them. `unmanaged` is not a warning: it is the honest word for a runner
+# someone registered with config.sh by hand, which is how boxes get concurrency
+# today and must therefore be visible rather than invisible.
+#
+# The units arrive on stdin rather than being scanned here so the merge stays
+# offline-testable — the harness has no systemd and cannot fabricate one.
+runner_merge_instances() {
+  local base="$1" units d n u name dir
+  units="$(cat)"
+  local managed=""
+
+  if [ -n "$base" ]; then
+    for d in "$base" "$base"/*; do
+      [ -d "$d" ] || continue
+      runner_is_instance_dir "$d" || continue
+      n="$(runner_instance_name "$d")"
+      u="$(runner_dir_unit "$d")"
+      # A dir with no .service can still have a unit — one installed before rig
+      # recorded it, or by hand. Ask the scan before giving up on it.
+      [ -n "$u" ] || u="$(printf '%s' "$units" | awk -F'\t' -v dd="$d" '$2 == dd { print $1; exit }')"
+      printf '%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "managed"
+      managed="${managed}${d}
+"
+    done
+  fi
+
+  printf '%s' "$units" | while IFS="$(printf '\t')" read -r unit dir; do
+    [ -n "$unit" ] || continue
+    if [ -n "$dir" ] && printf '%s' "$managed" | grep -qxF "$dir"; then
+      continue
+    fi
+    if [ -n "$dir" ] && [ -e "$dir/.runner" ]; then
+      name="$(runner_instance_name "$dir")"
+    else
+      name="$(runner_unit_name "$unit")"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$name" "$dir" "$unit" "unmanaged"
+  done
+}
+
+# runner_pick <name> <instances> — the instance line named <name>, or exit 1.
+# Every duplicate is printed: two instances answering to one name is a state a
+# hand-rolled sibling can reach, and the caller must be able to say so rather
+# than silently act on the first.
+runner_pick() {
+  printf '%s\n' "$2" | awk -F'\t' -v n="$1" 'NF && $1 == n { print; f = 1 } END { exit !f }'
+}
+
+# runner_candidates <instances> — the list a refusal names, one indented line
+# each. A refusal that says "pass --name" without saying which names exist
+# makes the operator go and look; this is the looking.
+runner_candidates() {
+  printf '%s\n' "$1" | awk -F'\t' 'NF { printf "  %-24s %s  [%s]\n", $1, ($2 == "" ? "(dir unknown)" : $2), $4 }'
+}
+
+# runner_count <instances> — how many instances the box has.
+runner_count() { printf '%s\n' "$1" | grep -c . || true; }
+
+# assert_runner_repo <runner_dir> <owner/repo> [instance_name]
+#
+# Returns 0 when the INSTANCE in <runner_dir> has no runner, or has one already
+# registered to <owner/repo>: re-running `install` against the repo that
+# instance is already on is real convergence — it re-uses the binary, skips
+# registration, exits 0.
+#
+# Returns 1, explaining itself on stderr, when the instance is registered to a
 # DIFFERENT repo. Skipping *that* is not convergence, it is ignoring the
 # argument: `install` would skip its configure step, restart the service on the
 # OLD repo, and report success — leaving the repo you asked for with no runner
 # and its jobs queued against one that will never come. Moving a runner between
 # repos is a trust-boundary act, so it belongs to `repoint`, out loud.
+#
+# Scoped to one instance since #166: on a box running four, "this box's runner"
+# named a thing that does not exist. The name is optional so the guard keeps
+# working on a dir whose instance has no recorded name.
 assert_runner_repo() {
-  local dir="$1" repo="$2" current wanted
+  local dir="$1" repo="$2" name="${3:-}" current wanted subject select
   [ -e "$dir/.runner" ] || return 0
 
   current="$(runner_repo_url "$dir")"
   wanted="https://github.com/${repo}"
+  if [ -n "$name" ]; then
+    subject="runner ${name}"
+    select=" --name ${name}"
+  else
+    subject="this box's runner"
+    select=""
+  fi
 
   if [ -z "$current" ]; then
     printf 'rig-runner: ERROR: %s\n' \
-"${dir}/.runner exists but names no repository — this box's registration cannot
-be read, so rig cannot tell whether it is already on ${wanted}.
+"${dir}/.runner exists but names no repository — the registration of ${subject}
+cannot be read, so rig cannot tell whether it is already on ${wanted}.
 Wipe the local registration and install again:
-  rig runner remove --local" >&2
+  rig runner remove --local${select}" >&2
     return 1
   fi
 
@@ -111,12 +282,15 @@ Wipe the local registration and install again:
   fi
 
   printf 'rig-runner: ERROR: %s\n' \
-"this box's runner is already registered to ${current}, not ${wanted}.
+"${subject} is already registered to ${current}, not ${wanted}.
 install will not move a runner between repositories: it would leave the service
 running against the OLD repo and report success. To move it in one act:
-  rig runner repoint --repo ${repo}
+  rig runner repoint --repo ${repo}${select}
 or take it off the old repo first, then install:
-  rig runner remove             (deregisters from ${current}; needs a removal token)
-  rig runner remove --local     (when you cannot mint one)" >&2
+  rig runner remove${select}             (deregisters from ${current}; needs a removal token)
+  rig runner remove --local${select}     (when you cannot mint one)
+To run a SECOND runner here instead of moving this one, give the new one its
+own name:
+  rig runner install --repo ${repo} --name <name>" >&2
   return 1
 }
