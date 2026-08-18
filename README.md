@@ -950,6 +950,20 @@ Two properties follow, and both are the point:
   `config.sh` by hand are listed as `unmanaged` rather than left out.
   `--name` selects them like any other; `install` refuses to register over
   one, because `config.sh --replace` would deregister it.
+  **`managed` means rig put it there** — recorded in `.rig-instance` when rig
+  registers the instance — and not merely that the directory sits under the
+  base. Anyone can `mkdir ~github-runner/actions-runner/mine` and run
+  `config.sh` in it; calling that one of rig's because of where it sits is the
+  same untruth as reporting one runner of four. The legacy layout below is the
+  one exception, and it is the migration.
+- **A teardown that could not finish says so.** `remove` exits non-zero and
+  names the runners still standing, rather than reporting a removal it did not
+  complete. It stops the service on every path it can, including the ones
+  where it cannot deregister — rig needs the runner's directory to reach
+  GitHub, but only the unit name to stop a runner, and a runner it cannot
+  deregister is still a runner taking jobs. With `--all`, one failure no
+  longer abandons the runners after it: every target gets its turn and the
+  failures land in the exit status.
 
 **Boxes installed before any of this keep working untouched.** Such a box has
 its runner in `~github-runner/actions-runner` itself rather than in a named
@@ -1085,6 +1099,21 @@ The service always comes down *first*, in both paths. GitHub's own removal
 refuses to run while the service is installed ("Uninstall service first"),
 and `--local` skips that check entirely — which would otherwise leave a
 running service pointed at config that no longer exists.
+
+**A removal that could not finish exits non-zero and names what is still
+standing.** Two runners can't be deregistered by rig at all: one whose
+directory systemd cannot report — no directory means no `config.sh`, so
+nothing to talk to GitHub with — and one whose directory belongs to a user rig
+will not run `config.sh` as. Both still get their **service stopped**, because
+that needs only the unit name and the scan already found it, and a runner rig
+cannot deregister is still a runner taking jobs. What rig will not do is call
+either one removed: the registration is still live in the repo, and you finish
+those by hand from Settings → Actions → Runners.
+
+The same holds for a deregistration GitHub rejects — a removal token is
+per-repository and short-lived. Under `--all` that used to kill the run
+partway down the list, with the runners after it untouched; now every target
+gets its turn and the failures are carried out in the exit status.
 
 Convergent — a box with no runner installed exits 0.
 

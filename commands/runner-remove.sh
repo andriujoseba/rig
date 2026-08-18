@@ -51,6 +51,14 @@ did not create: they are the reason a teardown that only knew about rig's
 would leave the box still taking jobs. `rig runner status` lists them.
 With --all, one removal token serves every runner on the same repository;
 runners on different repositories need their own, so remove those by name.
+A rejected token no longer abandons the runners after it: every target gets
+its turn, and what did not come down is named at the end.
+
+EXIT STATUS. A removal rig could not finish exits non-zero and lists the
+runners still standing. rig cannot deregister a runner whose directory it
+cannot read or cannot run config.sh in — there is no config.sh to talk to
+GitHub with — but it stops their SERVICE either way, which needs only the
+unit name. Finish those from Settings > Actions > Runners.
 
 Convergent: safe to re-run; a box with no runner installed exits 0.
 EOF
