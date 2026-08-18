@@ -194,12 +194,21 @@ runner_valid_name() {
 #
 # Prints nothing where there is no systemd, so every caller degrades to "rig's
 # own instances only" rather than dying.
+#
+# The grep is wrapped because a box WITH systemd and no actions.runner.* unit
+# is the ordinary empty box, and a grep that matches nothing exits 1 — which
+# under the callers' `set -o pipefail` took the whole pipeline down with it and
+# killed `remove`, `status` and `repoint` silently, exit 1 and not one line of
+# output, on exactly the "nothing installed here" path they promise to
+# converge on. Nothing found is an answer, not a failure. It survived the round
+# because a review box has no systemd at all and returns above this line, and
+# CI has none either; it took a fake systemd in the harness to see it (#174).
 runner_scan_units() {
   command -v systemctl >/dev/null 2>&1 || return 0
   local unit dir
   { systemctl list-units --all --no-legend --plain --type=service 'actions.runner.*' 2>/dev/null || true
     systemctl list-unit-files --no-legend --plain --type=service 'actions.runner.*' 2>/dev/null || true
-  } | awk '{ print $1 }' | grep -E '^actions\.runner\..*\.service$' | sort -u \
+  } | awk '{ print $1 }' | { grep -E '^actions\.runner\..*\.service$' || true; } | sort -u \
   | while read -r unit; do
       dir="$(systemctl show -p WorkingDirectory --value "$unit" 2>/dev/null || true)"
       printf '%s\t%s\n' "$unit" "$dir"

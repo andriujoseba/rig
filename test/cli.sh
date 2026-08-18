@@ -1678,14 +1678,12 @@ check "install: adoption keeps the legacy name, not the hostname default" \
 # AC2 says such a box converges on the hostname default.
 check "install: an unregistered legacy base takes the caller's name" \
   0 "${ADOPT_BOX}	ci-box-42" resolve "$ADOPT_BOX" ci-box-42 0
-# Exit 1 from grep is the assertion: the resolved NAME field is never the
-# literal "actions-runner" the basename fallback used to hand to config.sh.
+# The name field alone, so the assertion is about what gets REGISTERED rather
+# than about the line resolve prints. Exit 1 is the pass: never the literal
+# "actions-runner" the basename fallback used to hand to config.sh.
+resolve_name() { resolve "$1" "$2" "$3" | cut -f2; }
 check "install: ...never the literal 'actions-runner'" 1 "" \
-  bash -c 'resolve() { bash -c '"'"'set -euo pipefail
-      . "$1/commands/lib/runner-config.sh"
-      runner_resolve_instance "$2" "$3" "$4" ""'"'"' _ "$1" "$2" "$3" "$4"; }
-    resolve "$1" "$2" ci-box-42 0 | cut -f2 | grep -qx actions-runner' \
-  _ "$ROOT" "$ADOPT_BOX"
+  test "$(resolve_name "$ADOPT_BOX" ci-box-42 0)" = actions-runner
 # The listing view keeps the basename fallback on purpose — it has to call the
 # row something, and "that box never told anyone a name" is honest there.
 check "install: the LISTING still falls back to the directory name" \
@@ -1827,10 +1825,166 @@ check "runner install: does NOT filter — it must re-use a dormant install" 1 "
   grep -q 'runner_live' "$ROOT/commands/runner-install.sh"
 # remove is where that record is written, and it must be written BEFORE
 # anything is torn down: a failed deregistration must not be what loses it.
-rig_instance_at="$(grep -n 'rig-instance' "$ROOT/commands/runner-remove.sh" | head -n1 | cut -d: -f1)"
-svc_stop_at="$(grep -n 'svc.sh stop' "$ROOT/commands/runner-remove.sh" | head -n1 | cut -d: -f1)"
-check "remove: the name is recorded before the service comes down" \
-  0 "" test "${rig_instance_at:-999999}" -lt "${svc_stop_at:-0}"
+# --- remove, executed: a fake systemd, not a grep on the source ---------------
+# Round 1 of #174 asked for the failure cases to be proven by EXECUTION rather
+# than by another source grep, and rightly: the bug was a path that PRINTED
+# `systemctl disable --now <unit>` for the operator, never ran it, and returned
+# 0 — and a grep for "systemctl disable" in the source calls that present.
+#
+# runner-remove.sh wants root and a real systemd. Both are stubs here. `id`
+# answers the root check, and `systemctl` IS this box's systemd: it serves the
+# unit scan, records every call it receives, and fails on demand.
+STUBS="$(mktemp -d)"
+cat > "$STUBS/id" <<'STUB'
+#!/usr/bin/env bash
+# `id -u` with no operand is the root check. With one, it asks whether the
+# runner user exists — and unless the fixture says otherwise it does not, which
+# is the case where rig installed nothing and the scan is the only thing that
+# can say what the box runs.
+[ "$#" -eq 1 ] && [ "$1" = "-u" ] && { echo 0; exit 0; }
+[ -n "${FAKE_HOME:-}" ] && { echo 4242; exit 0; }
+exit 1
+STUB
+cat > "$STUBS/systemctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+case "$1" in
+  list-units|list-unit-files) cat "$SYSTEMCTL_UNITS" ;;
+  # The shape the finding turns on: systemd knows the unit and cannot report a
+  # WorkingDirectory for it.
+  show) printf '\n' ;;
+  disable) [ -z "${SYSTEMCTL_FAIL:-}" ] || exit 1 ;;
+esac
+exit 0
+STUB
+cat > "$STUBS/getent" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = passwd ] && [ -n "${FAKE_HOME:-}" ] && [ "$2" = github-runner ]; then
+  printf '%s:x:4242:4242::%s:/bin/bash\n' "$2" "$FAKE_HOME"; exit 0
+fi
+exec /usr/bin/getent "$@"
+STUB
+cat > "$STUBS/runuser" <<'STUB'
+#!/usr/bin/env bash
+# runuser -u <user> -- <cmd...>; the test harness is not root, and which user
+# config.sh runs as is not what these assertions are about.
+shift 2; [ "${1:-}" = "--" ] && shift
+exec "$@"
+STUB
+chmod +x "$STUBS"/id "$STUBS"/systemctl "$STUBS"/getent "$STUBS"/runuser
+
+# remove_run <units> <fail?> <args...> — runner-remove.sh against that fake box.
+SYSTEMCTL_LOG="$(mktemp)"
+remove_run() {
+  local units="$1" fail="$2"; shift 2
+  : > "$SYSTEMCTL_LOG"
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$units" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="$fail" FAKE_HOME="${FAKE_HOME:-}" \
+    "$ROOT/commands/runner-remove.sh" "$@"
+}
+logged() { grep -qF -e "$1" "$SYSTEMCTL_LOG"; }
+
+# One discovered unit whose directory systemd cannot report. rig cannot
+# deregister it — config.sh lives in that directory — but it knows the unit,
+# and a runner it cannot deregister is still a runner taking jobs.
+GHOST_UNITS="$(mktemp)"
+printf '%s\n' 'actions.runner.acme-gamma.ghost.service loaded active running ghost' > "$GHOST_UNITS"
+check "remove --all: an undeprovisionable runner is NOT reported removed" \
+  1 "did not come down completely" remove_run "$GHOST_UNITS" "" --all
+check "remove --all: ...and its service was actually disabled, not printed" \
+  0 "" logged "disable --now actions.runner.acme-gamma.ghost.service"
+check "remove --all: ...and the operator is told it is still registered" \
+  1 "still registered" remove_run "$GHOST_UNITS" "" --all
+# When even the disable fails, the by-hand instruction is the fallback — but
+# the exit status still refuses to call it done.
+check "remove --all: a disable that fails is not a success either" \
+  1 "stop it by hand" remove_run "$GHOST_UNITS" 1 --all
+
+# Two of them: the loop must reach the SECOND after the first comes back
+# incomplete. Pre-fix, a failing target killed the run under `set -e` with the
+# rest of the box untouched — the teardown landing mid-list.
+TWO_GHOSTS="$(mktemp)"
+printf '%s\n%s\n' \
+  'actions.runner.acme-gamma.ghost-a.service loaded active running a' \
+  'actions.runner.acme-gamma.ghost-b.service loaded active running b' > "$TWO_GHOSTS"
+check "remove --all: keeps going after a target it could not finish" \
+  1 "ghost-b" remove_run "$TWO_GHOSTS" "" --all
+check "remove --all: ...the first one's service came down" \
+  0 "" logged "disable --now actions.runner.acme-gamma.ghost-a.service"
+check "remove --all: ...and so did the second's" \
+  0 "" logged "disable --now actions.runner.acme-gamma.ghost-b.service"
+
+# The whole path, on a box whose directory rig CAN read: the service comes
+# down through svc.sh, config.sh deregisters, and the exit is a real success.
+NO_UNITS="$(mktemp)"
+SVC_LOG="$(mktemp)"
+# Sets FAKE_HOME and BOX as globals rather than printing the path: called in a
+# $( ) it would build the box inside a subshell and lose FAKE_HOME with it.
+FAKE_HOME=""
+BOX=""
+mkbox() { # mkbox — a legacy box with stub svc.sh/config.sh, fresh each time
+  FAKE_HOME="$(mktemp -d)"
+  local d="$FAKE_HOME/actions-runner"
+  mkdir -p "$d"
+  printf '%s\n' '{"agentId":7,"agentName":"ci-box","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' > "$d/.runner"
+  printf '%s\n' 'actions.runner.acme-alpha.ci-box.service' > "$d/.service"
+  printf '%s\n' 'self-hosted,linux' > "$d/.rig-labels"
+  # Records whether .rig-instance was on disk WHEN the service came down. That
+  # ordering used to be asserted by comparing two grep -n line numbers in the
+  # source, which broke the moment the teardown moved into a helper — and would
+  # not have caught the ordering actually inverting inside one function.
+  cat > "$d/svc.sh" <<'SVC'
+#!/usr/bin/env bash
+if [ -r ./.rig-instance ]; then m=present; else m=absent; fi
+printf '%s %s\n' "$1" "$m" >> "$SVC_LOG"
+SVC
+  cat > "$d/config.sh" <<'CFG'
+#!/usr/bin/env bash
+[ -z "${CONFIG_FAIL:-}" ] || exit 1
+rm -f ./.runner
+CFG
+  chmod +x "$d/svc.sh" "$d/config.sh"
+  BOX="$d"
+}
+# remove_local [VAR=VAL...] — runner-remove.sh --local against the fixture box
+remove_local() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" "$@" \
+    "$ROOT/commands/runner-remove.sh" --local
+}
+mkbox; : > "$SVC_LOG"
+check "remove --local: a box rig can read comes down clean, exit 0" \
+  0 "removed" remove_local
+check "remove: the name was on disk BEFORE the service came down" \
+  0 "" grep -qx 'stop present' "$SVC_LOG"
+check "remove: ...and the service was uninstalled too" \
+  0 "" grep -qx 'uninstall present' "$SVC_LOG"
+check "remove: the name outlives the registration it removed" \
+  0 "ci-box" cat "$BOX/.rig-instance"
+check "remove: the registration is gone" 1 "" test -e "$BOX/.runner"
+check "remove: the recorded labels went with it" 1 "" test -e "$BOX/.rig-labels"
+
+# A deregistration that fails is reported and survived, not silently succeeded.
+mkbox; : > "$SVC_LOG"
+check "remove: a failed deregistration is not a success" \
+  1 "did not come down completely" remove_local CONFIG_FAIL=1
+check "remove: ...and the labels are kept, matching the registration left behind" \
+  0 "" test -e "$BOX/.rig-labels"
+FAKE_HOME=""
+
+# A box WITH systemd and no actions.runner.* unit at all — the ordinary empty
+# box, and the one the help promises exits 0. The scan's grep matches nothing
+# and exits 1, which under the callers' pipefail took the whole pipeline down
+# and killed the command silently: exit 1, no output, on the "nothing installed
+# here" path. Invisible to a review box and to CI, both of which have no
+# systemd and return before the grep — it took the fake systemd above to see.
+check "remove: a box with systemd and no runner units converges, exit 0" \
+  0 "nothing to remove" remove_run "$NO_UNITS" "" --all
+check "remove: ...and it says so rather than dying silently" \
+  0 "no actions.runner.* unit" remove_run "$NO_UNITS" "" --all
+check "status: the same empty box does not die silently either" \
+  1 "" env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" \
+  SYSTEMCTL_LOG="$SYSTEMCTL_LOG" "$ROOT/commands/runner-status.sh"
 
 # --- names as path components --------------------------------------------------
 check "name: an ordinary name is valid"     0 "" lib runner_valid_name ci-1
