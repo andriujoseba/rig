@@ -246,6 +246,107 @@ runner_candidates() {
 # runner_count <instances> — how many instances the box has.
 runner_count() { printf '%s\n' "$1" | grep -c . || true; }
 
+# runner_resolve_instance <base> <name> <name_given 0|1> <instances>
+#
+# Where `install` should put this instance. Prints "<dir><TAB><name>" and
+# returns 0; prints the refusal on stderr and returns 1.
+#
+# It lives here, beside assert_runner_repo and for the same reason: reaching it
+# through the CLI needs root and a really-registered runner, neither of which
+# the test harness can fabricate, and the rules below are exactly the ones the
+# acceptance criteria are about.
+runner_resolve_instance() {
+  local base="$1" name="$2" given="$3" instances="$4" line dir
+
+  # The one rule that reads the box rather than the name, and the whole of the
+  # migration: a box whose runner lives in the legacy <base> layout keeps it.
+  # Omitting --name there means "the runner this box already has", whatever it
+  # is called — which is what omitting it meant before instances existed, so
+  # such a box converges with the same dir, the same unit and no
+  # re-registration. Pass a name and you get an instance, including beside it.
+  if [ "$given" -eq 0 ] && runner_is_instance_dir "$base"; then
+    printf '%s\t%s\n' "$base" "$(runner_instance_name "$base")"
+    return 0
+  fi
+
+  if line="$(runner_pick "$name" "$instances")"; then
+    if [ "$(runner_count "$line")" -ne 1 ]; then
+      printf 'rig-runner: ERROR: %s\n' \
+"more than one runner on this box answers to '${name}':
+$(runner_candidates "$line")
+rig will not guess which one you meant." >&2
+      return 1
+    fi
+    # An unmanaged instance is someone's hand-rolled runner. Registering over
+    # its name is not convergence: config.sh --replace would deregister it and
+    # rig would report success, which is the class of bug #166 is about.
+    if [ "$(printf '%s' "$line" | cut -f4)" = "unmanaged" ]; then
+      printf 'rig-runner: ERROR: %s\n' \
+"the name '${name}' is taken by a runner rig did not create:
+$(runner_candidates "$line")
+registering over it would deregister that runner (config.sh --replace).
+Pick another --name, or take that one down first." >&2
+      return 1
+    fi
+    printf '%s\t%s\n' "$(printf '%s' "$line" | cut -f2)" "$name"
+    return 0
+  fi
+
+  # A new instance. Refusing an occupied path is what keeps a name out of the
+  # tarball's own top-level entries (bin/, externals/, config.sh) on a box
+  # carrying the legacy layout, with no reserved-word list to keep in sync.
+  dir="$base/$name"
+  if [ -e "$dir" ] && ! runner_is_instance_dir "$dir"; then
+    printf 'rig-runner: ERROR: %s\n' \
+"${dir} exists and is not a runner install — choose another --name" >&2
+    return 1
+  fi
+  printf '%s\t%s\n' "$dir" "$name"
+}
+
+# runner_select_instance <name> <instances> <hint>
+#
+# Which instance `remove` and `repoint` act on. Prints the chosen instance line
+# and returns 0; prints the refusal, with <hint> as its closing line, and
+# returns 1.
+#
+# The empty-name-with-several case is the whole point (#166): "the runner" is
+# not a thing anyone can mean on a box running four, and acting on one of them
+# and exiting 0 is a command that looks like it did the whole job.
+runner_select_instance() {
+  local name="$1" instances="$2" hint="$3" count line
+  count="$(runner_count "$instances")"
+
+  if [ -n "$name" ]; then
+    if ! line="$(runner_pick "$name" "$instances")"; then
+      printf 'rig-runner: ERROR: %s\n' \
+"no runner named '${name}' on this box. It runs:
+$(runner_candidates "$instances")" >&2
+      return 1
+    fi
+    if [ "$(runner_count "$line")" -ne 1 ]; then
+      printf 'rig-runner: ERROR: %s\n' \
+"more than one runner on this box answers to '${name}':
+$(runner_candidates "$line")
+rig will not guess which one you meant." >&2
+      return 1
+    fi
+    printf '%s\n' "$line"
+    return 0
+  fi
+
+  if [ "$count" -eq 1 ]; then
+    printf '%s\n' "$instances"
+    return 0
+  fi
+
+  printf 'rig-runner: ERROR: %s\n' \
+"this box runs ${count} runners — say which one:
+$(runner_candidates "$instances")
+${hint}" >&2
+  return 1
+}
+
 # assert_runner_repo <runner_dir> <owner/repo> [instance_name]
 #
 # Returns 0 when the INSTANCE in <runner_dir> has no runner, or has one already

@@ -138,50 +138,12 @@ command -v curl >/dev/null || die "curl is required (run rig bootstrap first)"
 BASE_DIR=""
 RUNNER_DIR=""
 resolve_instance() {
-  local instances line
+  local resolved
   BASE_DIR="$(runner_base_dir "$USER_HOME")"
-  instances="$(runner_scan_units | runner_merge_instances "$BASE_DIR")"
-
-  # The one rule that reads the box rather than the name, and the whole of the
-  # migration: a box whose runner lives in the legacy <base> layout keeps it.
-  # Omitting --name there means "the runner this box already has", whatever it
-  # is called — which is exactly what omitting it meant before instances
-  # existed, so such a box converges with the same dir, the same unit and no
-  # re-registration. Pass a name and you get an instance, including beside
-  # that one.
-  if [ "$NAME_GIVEN" -eq 0 ] && runner_is_instance_dir "$BASE_DIR"; then
-    RUNNER_DIR="$BASE_DIR"
-    RUNNER_NAME="$(runner_instance_name "$BASE_DIR")"
-    return 0
-  fi
-
-  if line="$(runner_pick "$RUNNER_NAME" "$instances")"; then
-    if [ "$(printf '%s\n' "$line" | grep -c .)" -ne 1 ]; then
-      die "more than one runner on this box answers to '${RUNNER_NAME}':
-$(runner_candidates "$line")
-rig will not guess which one you meant."
-    fi
-    # An unmanaged instance is someone's hand-rolled runner. Registering over
-    # its name is not convergence: config.sh --replace would deregister it and
-    # rig would report success, which is the class of bug #166 is about.
-    if [ "$(printf '%s' "$line" | cut -f4)" = "unmanaged" ]; then
-      die "the name '${RUNNER_NAME}' is taken by a runner rig did not create:
-$(runner_candidates "$line")
-registering over it would deregister that runner (config.sh --replace).
-Pick another --name, or take that one down first."
-    fi
-    RUNNER_DIR="$(printf '%s' "$line" | cut -f2)"
-    return 0
-  fi
-
-  # A new instance. Refusing an occupied path is what keeps a name out of the
-  # tarball's own top-level entries (bin/, externals/, config.sh) on a box
-  # carrying the legacy layout, with no reserved-word list to keep in sync.
-  RUNNER_DIR="$BASE_DIR/$RUNNER_NAME"
-  if [ -e "$RUNNER_DIR" ] && ! runner_is_instance_dir "$RUNNER_DIR"; then
-    die "${RUNNER_DIR} exists and is not a runner install — choose another --name"
-  fi
-  return 0
+  resolved="$(runner_resolve_instance "$BASE_DIR" "$RUNNER_NAME" "$NAME_GIVEN" \
+    "$(runner_scan_units | runner_merge_instances "$BASE_DIR")")" || exit 1
+  RUNNER_DIR="$(printf '%s' "$resolved" | cut -f1)"
+  RUNNER_NAME="$(printf '%s' "$resolved" | cut -f2)"
 }
 
 # Registration is pending unless the runner user already exists AND the

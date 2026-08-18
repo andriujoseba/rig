@@ -125,23 +125,8 @@ COUNT="$(runner_count "$INSTANCES")"
 [ "$COUNT" -gt 0 ] \
   || die "no runner on this box (nothing under ${BASE_DIR}, no actions.runner.* unit) — use: rig runner install"
 
-if [ -n "$WANT_NAME" ]; then
-  if ! LINE="$(runner_pick "$WANT_NAME" "$INSTANCES")"; then
-    die "no runner named '${WANT_NAME}' on this box. It runs:
-$(runner_candidates "$INSTANCES")"
-  fi
-  if [ "$(runner_count "$LINE")" -ne 1 ]; then
-    die "more than one runner on this box answers to '${WANT_NAME}':
-$(runner_candidates "$LINE")
-rig will not guess which one you meant."
-  fi
-elif [ "$COUNT" -eq 1 ]; then
-  LINE="$INSTANCES"
-else
-  die "this box runs ${COUNT} runners — say which one to move:
-$(runner_candidates "$INSTANCES")
-  rig runner repoint --repo ${REPO} --name <name>"
-fi
+LINE="$(runner_select_instance "$WANT_NAME" "$INSTANCES" \
+"  rig runner repoint --repo ${REPO} --name <name>")" || exit 1
 
 RUNNER_NAME="$(printf '%s' "$LINE" | cut -f1)"
 RUNNER_DIR="$(printf '%s' "$LINE" | cut -f2)"

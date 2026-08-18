@@ -109,23 +109,10 @@ fi
 # --- pick the instances to remove -------------------------------------------
 if [ "$ALL" -eq 1 ]; then
   TARGETS="$INSTANCES"
-elif [ -n "$WANT_NAME" ]; then
-  if ! TARGETS="$(runner_pick "$WANT_NAME" "$INSTANCES")"; then
-    die "no runner named '${WANT_NAME}' on this box. It runs:
-$(runner_candidates "$INSTANCES")"
-  fi
-  if [ "$(runner_count "$TARGETS")" -ne 1 ]; then
-    die "more than one runner on this box answers to '${WANT_NAME}':
-$(runner_candidates "$TARGETS")
-rig will not guess which one you meant."
-  fi
-elif [ "$COUNT" -eq 1 ]; then
-  TARGETS="$INSTANCES"
 else
-  die "this box runs ${COUNT} runners — say which one:
-$(runner_candidates "$INSTANCES")
-  rig runner remove --name <name>    one of them
-  rig runner remove --all            all of them"
+  TARGETS="$(runner_select_instance "$WANT_NAME" "$INSTANCES" \
+"  rig runner remove --name <name>    one of them
+  rig runner remove --all            all of them")" || exit 1
 fi
 
 # --- removal token — only when a server-side deregistration is pending -------
