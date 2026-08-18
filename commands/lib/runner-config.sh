@@ -175,7 +175,16 @@ runner_scan_units() {
 # runner_merge_instances <base>  (stdin: runner_scan_units' "unit<TAB>dir" lines)
 #
 # The whole instance list for a box, one line each:
-#   <name><TAB><dir><TAB><unit><TAB>managed|unmanaged
+#   <name><TAB><dir><TAB><unit><TAB>managed|unmanaged<TAB>live|dormant
+#
+# LIVE vs DORMANT is the difference between a runner and a directory. `remove`
+# deregisters and deliberately keeps the binary, so the directory outlives the
+# runner: it still holds an install (which is why `install` must find it and
+# re-use it) and holds no runner (which is why `status` must not report one,
+# and `remove` must go on saying there is nothing to remove). Live means a
+# registration or a unit; everything else is dormant. Callers that answer
+# "what does this box run" filter with runner_live; `install`, which answers
+# "where does this name belong", does not.
 #
 # rig's own instances first — the legacy <base> when it holds one, then every
 # <base>/<name> — followed by every scanned unit whose WorkingDirectory is none
@@ -199,7 +208,11 @@ runner_merge_instances() {
       # A dir with no .service can still have a unit — one installed before rig
       # recorded it, or by hand. Ask the scan before giving up on it.
       [ -n "$u" ] || u="$(printf '%s' "$units" | awk -F'\t' -v dd="$d" '$2 == dd { print $1; exit }')"
-      printf '%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "managed"
+      if [ -e "$d/.runner" ] || [ -n "$u" ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "managed" "live"
+      else
+        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$d" "$u" "managed" "dormant"
+      fi
       managed="${managed}${d}
 "
     done
@@ -224,9 +237,16 @@ runner_merge_instances() {
     else
       name="$(runner_unit_name "$unit")"
     fi
-    printf '%s\t%s\t%s\t%s\n' "$name" "$dir" "$unit" "unmanaged"
+    # Always live: a scanned unit IS a runner the box runs, whatever rig can
+    # read of the directory behind it.
+    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$dir" "$unit" "unmanaged" "live"
   done
 }
+
+# runner_live — the instances a box actually RUNS, on stdin, on stdout.
+# The filter every "what is on this box" question applies, and the one
+# `install` does not.
+runner_live() { awk -F'\t' 'NF && $5 == "live"'; }
 
 # runner_pick <name> <instances> — the instance line named <name>, or exit 1.
 # Every duplicate is printed: two instances answering to one name is a state a

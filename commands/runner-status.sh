@@ -71,7 +71,9 @@ if id -u "$RUNNER_USER" >/dev/null 2>&1; then
   BASE_DIR="$(runner_base_dir "$USER_HOME")"
 fi
 
-INSTANCES="$(runner_scan_units | runner_merge_instances "$BASE_DIR")"
+# runner_live, because a deregistered instance keeps its binary: the directory
+# survives `remove` and the runner does not. Only `install` looks at those.
+INSTANCES="$(runner_scan_units | runner_merge_instances "$BASE_DIR" | runner_live)"
 COUNT="$(runner_count "$INSTANCES")"
 
 if [ "$COUNT" -eq 0 ]; then

@@ -124,7 +124,9 @@ USER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
 BASE_DIR="$(runner_base_dir "$USER_HOME")"
 
 # --- which runner? -----------------------------------------------------------
-INSTANCES="$(runner_scan_units | runner_merge_instances "$BASE_DIR")"
+# runner_live, because a deregistered instance keeps its binary: the directory
+# survives `remove` and the runner does not. Only `install` looks at those.
+INSTANCES="$(runner_scan_units | runner_merge_instances "$BASE_DIR" | runner_live)"
 COUNT="$(runner_count "$INSTANCES")"
 
 [ "$COUNT" -gt 0 ] \

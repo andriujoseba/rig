@@ -1569,11 +1569,19 @@ EMPTY_BOX="$(mktemp -d)"
 # directories.
 HAND_UNITS="$(printf 'actions.runner.acme-gamma.hand-3.service\t/opt/hand-3\nactions.runner.acme-gamma.hand-4.service\t/opt/hand-4\n')"
 
-# instances <base> [units] — the merged instance list, as every command builds it
+# instances <base> [units] — every install found, as `install` sees them
 instances() {
   bash -c 'set -euo pipefail
     . "$1/commands/lib/runner-config.sh"
     printf "%s" "${3:-}" | runner_merge_instances "$2"' _ "$ROOT" "$1" "${2:-}"
+}
+# live <base> [units] — the ones the box actually RUNS, as status/remove/repoint
+# see them. The difference is a deregistered install: `remove` keeps the binary
+# on purpose, so the directory outlives the runner.
+live() {
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    printf "%s" "${3:-}" | runner_merge_instances "$2" | runner_live' _ "$ROOT" "$1" "${2:-}"
 }
 
 # --- discovery: rig's own instances, and everyone else's ----------------------
@@ -1698,6 +1706,29 @@ check "name: install resolves that name back to the same directory" \
   0 "${NAMED_BOX}/ci-1	ci-1" resolve "$NAMED_BOX" ci-1 1
 check "name: .rig-instance outranks a stale .runner" \
   0 "ci-1" lib runner_instance_name "$NAMED_BOX/ci-1"
+# ...and that directory is an INSTALL, not a runner. `status` must go on
+# exiting 1 after a remove — the drill asserts exactly that ("runner status
+# confirms: nothing registered"), and `remove` must go on saying there is
+# nothing to remove. Only `install` may see it, which is how the binary gets
+# re-used instead of re-downloaded.
+check "dormant: install still finds a deregistered install" \
+  0 "1" lib runner_count "$(instances "$NAMED_BOX")"
+check "dormant: it is flagged dormant, not live" \
+  0 "dormant" lib runner_pick ci-1 "$(instances "$NAMED_BOX")"
+check "dormant: status and remove see no runner there" \
+  0 "0" lib runner_count "$(live "$NAMED_BOX")"
+# A registered instance is live; so is one with a unit and no registration yet.
+check "live: a registered instance is live" \
+  0 "live" lib runner_pick ci-1 "$(live "$MULTI_BOX")"
+check "live: a hand-rolled unit is live whatever rig can read" \
+  0 "live" lib runner_pick hand-3 "$(live "$MULTI_BOX" "$HAND_UNITS")"
+# The three "what does this box run" commands filter; install does not.
+for c in status remove repoint; do
+  check "runner $c: asks what the box RUNS, not what is installed on it" 0 "" \
+    grep -q 'runner_live' "$ROOT/commands/runner-$c.sh"
+done
+check "runner install: does NOT filter — it must re-use a dormant install" 1 "" \
+  grep -q 'runner_live' "$ROOT/commands/runner-install.sh"
 # remove is where that record is written, and it must be written BEFORE
 # anything is torn down: a failed deregistration must not be what loses it.
 rig_instance_at="$(grep -n 'rig-instance' "$ROOT/commands/runner-remove.sh" | head -n1 | cut -d: -f1)"
