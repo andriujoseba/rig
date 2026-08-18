@@ -669,64 +669,133 @@ check "tenant: cron.service active assert is present" 0 "" \
   grep -qF "systemctl is-active cron" "$ROOT/commands/bootstrap-tenant.sh"
 
 # #164: tenant scratch lives on the disk-backed home filesystem. Lift the
-# real convergers and drive them against a fixture home/environment file: the
-# production script needs root for ownership, while this harness can prove the
-# same-user case without mutating the box it runs in.
-TMPDIR_FNS="$(sed -n '/^append_line_once() {/,/^}/p; /^converge_environment_assignment() {/,/^}/p; /^converge_tenant_tmpdir() {/,/^}/p' "$ROOT/commands/bootstrap-tenant.sh")"
+# real convergers and drive them against fixture homes and per-user crontabs:
+# production needs root for ownership, while this harness proves the same-user
+# case without mutating this box or any real crontab.
+TMPDIR_FNS="$(sed -n '/^append_line_once() {/,/^}/p; /^converge_user_crontab_assignment() {/,/^}/p; /^converge_tenant_tmpdir() {/,/^}/p' "$ROOT/commands/bootstrap-tenant.sh")"
 # shellcheck disable=SC2016  # expanded by the inner bash
 check "tenant TMPDIR: convergers lift out of the real file whole" 0 "" \
   bash -c '[ "$(printf %s "$1" | grep -c "^}$")" -eq 3 ]' _ "$TMPDIR_FNS"
 check "tenant TMPDIR: converge is invoked for agent tenants" 0 "" \
   grep -qE '^  converge_tenant_tmpdir$' "$ROOT/commands/bootstrap-tenant.sh"
 
+# shellcheck disable=SC2120  # inner bash consumes its own positional arguments
 drive_tmpdir() {
   local d user group before after
   d="$(mktemp -d)"
   user="$(id -un)"; group="$(id -gn)"
-  mkdir -p "$d/home"
-  printf 'LANG=C.UTF-8\nTMPDIR="/tmp/stale"\nexport TMPDIR=/tmp/duplicate\n' > "$d/environment"
+  mkdir -p "$d/home" "$d/crontabs"
+  printf 'MAILTO=tenant\n*/5 * * * * /tenant-job\nTMPDIR=/tmp/stale\n' > "$d/crontabs/$user"
+  printf 'MAILTO=peer\n*/5 * * * * /peer-job\n' > "$d/crontabs/peer"
+  printf 'MAILTO=root\n*/5 * * * * /root-job\n' > "$d/crontabs/root"
+  cp "$d/crontabs/peer" "$d/peer.before"
+  cp "$d/crontabs/root" "$d/root.before"
   before="$(find /tmp -mindepth 1 -maxdepth 1 | wc -l)"
   TENANT_USER="$user" TENANT_GROUP="$group" TENANT_HOME="$d/home" \
-    RIG_ENVIRONMENT_FILE="$d/environment" bash -c '
+    RIG_CRON_DIR="$d/crontabs" bash -c '
       set -euo pipefail
       log() { :; }
       die() { printf "%s\n" "$1" >&2; exit "${2:-1}"; }
-      runuser() { [ "$1" = -u ]; shift 2; [ "$1" != -- ] || shift; "$@"; }
+      runuser() {
+        case "$1" in
+          -u) shift 2; [ "$1" != -- ] || shift; "$@" ;;
+          -l) shift 2; [ "$1" = -c ]; ( export HOME="$TENANT_HOME"; . "$HOME/.profile"; eval "$2" ) ;;
+          *) return 2 ;;
+        esac
+      }
+      df() { printf "Filesystem Type 1024-blocks Used Available Capacity Mounted on\nfixture ext4 1 1 1 1%% %s\n" "$2"; }
+      crontab() {
+        [ "$1" = -u ] || return 2
+        local target="$2"
+        shift 2
+        case "${1:-}" in
+          -l) [ -f "$RIG_CRON_DIR/$target" ] || return 1; command cat "$RIG_CRON_DIR/$target" ;;
+          *) command cp "$1" "$RIG_CRON_DIR/$target" ;;
+        esac
+      }
       '"$TMPDIR_FNS"'
       converge_tenant_tmpdir
       converge_tenant_tmpdir
       profile_tmpdir="$(HOME="$TENANT_HOME" bash -c ". \"$TENANT_HOME/.profile\"; printf %s \"\$TMPDIR\"")"
-      env_tmpdir="$(sed -n "s/^TMPDIR=\"\(.*\)\"$/\1/p" "$RIG_ENVIRONMENT_FILE")"
-      made="$(TMPDIR="$env_tmpdir" mktemp)"
-      printf "profile=%s\nenvironment=%s\nmade=%s\nmode=%s\nprofile-lines=%s\nenvironment-lines=%s\nlang-lines=%s\n" \
-        "$profile_tmpdir" "$env_tmpdir" "$made" \
+      zsh_tmpdir="$(HOME="$TENANT_HOME" bash -c ". \"$TENANT_HOME/.zshenv\"; printf %s \"\$TMPDIR\"")"
+      cron_tmpdir="$(sed -n "s/^TMPDIR=//p" "$RIG_CRON_DIR/$TENANT_USER")"
+      made="$(TMPDIR="$cron_tmpdir" mktemp)"
+      cmp -s "$RIG_CRON_DIR/peer" "${RIG_CRON_DIR%/*}/peer.before" && peer_unchanged=yes || peer_unchanged=no
+      cmp -s "$RIG_CRON_DIR/root" "${RIG_CRON_DIR%/*}/root.before" && root_unchanged=yes || root_unchanged=no
+      printf "expected=%s\nprofile=%s\nzsh=%s\ncron=%s\nmade=%s\nmode=%s\nprofile-lines=%s\nzsh-lines=%s\ncron-lines=%s\ntenant-job-lines=%s\npeer-unchanged=%s\nroot-unchanged=%s\n" \
+        "$TENANT_HOME/tmp" "$profile_tmpdir" "$zsh_tmpdir" "$cron_tmpdir" "$made" \
         "$(stat -c "%U:%G %a" "$TENANT_HOME/tmp")" \
         "$(grep -c "^export TMPDIR=" "$TENANT_HOME/.profile")" \
-        "$(grep -c "^TMPDIR=" "$RIG_ENVIRONMENT_FILE")" \
-        "$(grep -c "^LANG=C.UTF-8$" "$RIG_ENVIRONMENT_FILE")"
+        "$(grep -c "^export TMPDIR=" "$TENANT_HOME/.zshenv")" \
+        "$(grep -c "^TMPDIR=" "$RIG_CRON_DIR/$TENANT_USER")" \
+        "$(grep -c "/tenant-job$" "$RIG_CRON_DIR/$TENANT_USER")" \
+        "$peer_unchanged" "$root_unchanged"
       rm -f "$made"
     '
   after="$(find /tmp -mindepth 1 -maxdepth 1 | wc -l)"
   printf 'tmp-count=%s:%s\n' "$before" "$after"
   rm -rf "$d"
 }
+# shellcheck disable=SC2119  # drive_tmpdir itself takes no arguments
 TMPDIR_DRIVE="$(drive_tmpdir)"
 tmpdir_has() { printf '%s' "$TMPDIR_DRIVE" | grep -qF -e "$1"; }
-check "tenant TMPDIR: profile resolves to the tenant disk path" 0 "" \
-  tmpdir_has "profile=/tmp/"
-check "tenant TMPDIR: PAM environment resolves to the tenant disk path" 0 "" \
-  tmpdir_has "environment=/tmp/"
 # shellcheck disable=SC2016  # expanded by the inner bash
-check "tenant TMPDIR: mktemp writes below the tenant scratch directory" 0 "" \
-  bash -c 'p=$(printf %s "$1" | sed -n "s/^made=//p"); e=$(printf %s "$1" | sed -n "s/^environment=//p"); case "$p" in "$e"/*) exit 0;; *) exit 1;; esac' _ "$TMPDIR_DRIVE"
+check "tenant TMPDIR: bash profile resolves to the exact tenant disk path" 0 "" \
+  bash -c 'x=$(printf %s "$1" | sed -n "s/^expected=//p"); p=$(printf %s "$1" | sed -n "s/^profile=//p"); [ "$p" = "$x" ]' _ "$TMPDIR_DRIVE"
+# shellcheck disable=SC2016  # expanded by the inner bash
+check "tenant TMPDIR: zsh login carrier resolves to the exact tenant disk path" 0 "" \
+  bash -c 'x=$(printf %s "$1" | sed -n "s/^expected=//p"); z=$(printf %s "$1" | sed -n "s/^zsh=//p"); [ "$z" = "$x" ]' _ "$TMPDIR_DRIVE"
+# shellcheck disable=SC2016  # expanded by the inner bash
+check "tenant TMPDIR: cron resolves to the exact tenant disk path" 0 "" \
+  bash -c 'x=$(printf %s "$1" | sed -n "s/^expected=//p"); c=$(printf %s "$1" | sed -n "s/^cron=//p"); [ "$c" = "$x" ]' _ "$TMPDIR_DRIVE"
+# shellcheck disable=SC2016  # expanded by the inner bash
+check "tenant TMPDIR: cron-launched mktemp writes below tenant scratch" 0 "" \
+  bash -c 'p=$(printf %s "$1" | sed -n "s/^made=//p"); x=$(printf %s "$1" | sed -n "s/^expected=//p"); case "$p" in "$x"/*) exit 0;; *) exit 1;; esac' _ "$TMPDIR_DRIVE"
 check "tenant TMPDIR: directory ownership and private tmp semantics converge" 0 "" \
   tmpdir_has "mode=$(id -un):$(id -gn) 700"
 check "tenant TMPDIR: profile export is idempotent" 0 "" tmpdir_has "profile-lines=1"
-check "tenant TMPDIR: stale PAM assignments are replaced once" 0 "" tmpdir_has "environment-lines=1"
-check "tenant TMPDIR: unrelated PAM environment survives" 0 "" tmpdir_has "lang-lines=1"
+check "tenant TMPDIR: zsh export is idempotent" 0 "" tmpdir_has "zsh-lines=1"
+check "tenant TMPDIR: stale cron assignments are replaced once" 0 "" tmpdir_has "cron-lines=1"
+check "tenant TMPDIR: existing tenant cron jobs survive" 0 "" tmpdir_has "tenant-job-lines=1"
+check "tenant TMPDIR: peer crontab is untouched" 0 "" tmpdir_has "peer-unchanged=yes"
+check "tenant TMPDIR: root crontab is untouched" 0 "" tmpdir_has "root-unchanged=yes"
+check "tenant TMPDIR: no machine-wide environment carrier remains" 1 "" \
+  grep -E 'RIG_ENVIRONMENT_FILE|/etc/environment|pam_env' "$ROOT/commands/bootstrap-tenant.sh"
 # shellcheck disable=SC2016  # expanded by the inner bash
 check "tenant TMPDIR: the fixture leaves /tmp usage flat" 0 "" \
   bash -c 'v=$(printf %s "$1" | sed -n "s/^tmp-count=//p"); [ "${v%:*}" = "${v#*:}" ]' _ "$TMPDIR_DRIVE"
+
+drive_tmpdir_failure() {
+  local shape="$1" d user group
+  d="$(mktemp -d)"
+  user="$(id -un)"; group="$(id -gn)"
+  mkdir -p "$d/home" "$d/crontabs"
+  case "$shape" in
+    file) : > "$d/home/tmp" ;;
+    symlink) ln -s "$d/elsewhere" "$d/home/tmp" ;;
+    tmpfs) mkdir "$d/home/tmp" ;;
+  esac
+  TENANT_USER="$user" TENANT_GROUP="$group" TENANT_HOME="$d/home" \
+    RIG_CRON_DIR="$d/crontabs" RIG_TEST_FSTYPE="$shape" bash -c '
+      set -euo pipefail
+      log() { :; }
+      die() { printf "%s\n" "$1" >&2; exit "${2:-1}"; }
+      runuser() { [ "$1" = -u ]; shift 2; [ "$1" != -- ] || shift; "$@"; }
+      crontab() { return 0; }
+      df() { printf "Filesystem Type 1024-blocks Used Available Capacity Mounted on\nfixture %s 1 1 1 1%% %s\n" "${RIG_TEST_FSTYPE/tmpfs/tmpfs}" "$2"; }
+      '"$TMPDIR_FNS"'
+      converge_tenant_tmpdir
+    ' 2>&1
+  local rc=$?
+  rm -rf "$d"
+  return "$rc"
+}
+check "tenant TMPDIR: a pre-existing file fails deliberately" 1 "not a directory" \
+  drive_tmpdir_failure file
+check "tenant TMPDIR: a pre-existing symlink fails deliberately" 1 "not a directory" \
+  drive_tmpdir_failure symlink
+check "tenant TMPDIR: a tmpfs scratch path is refused" 1 "not disk-backed (tmpfs)" \
+  drive_tmpdir_failure tmpfs
 
 # The converge is exercised, not argued about (the drop_incus precedent):
 # converge_cron is lifted out of the real file verbatim — column-0
