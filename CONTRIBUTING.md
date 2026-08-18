@@ -29,6 +29,17 @@ genuinely rig's.
 4. **Feature PRs land their changelog entry as part of the PR**: write
    `changelog.d/<issue>.md` — the release PR assembles those fragments into
    the release notes verbatim.
+5. **An issue whose criteria outlive the merge is referenced, never closed**:
+   such a PR says `Refs #N`, and `refs-guard` now says so instead of a human
+   catching it — it reds when a body promising `Refs #N` contradicts GitHub's
+   closing-issue graph, on the body **edit** as much as on a push.
+6. **A red head you cannot rerun is asked for, not waited on**: every build PR
+   here is a fork PR, so its run lives in this repository and only `actions:
+   write` here can restart it. Comment the evidence — `🔁 rerun owed at head
+   <full-sha>` — and set `rerun-owed`; `ci-rerun` starts the one rerun, clears
+   the label and comments the new attempt. A refusal leaves the label standing
+   and names the gate that refused, the roster in `.github/labels.conf` being
+   the first of them.
 
 ## Changelog entries
 
@@ -107,6 +118,7 @@ corrected on the next pass:
 | `scope:*` on PRs | actions/labeler, from the changed paths ([.github/labeler.yml](.github/labeler.yml)). Additive — you may add more, the machine won't remove them. |
 | `scope:*` on issues | you, when opening or triaging — issues have no paths to derive from. |
 | `blocked`, `release` | you — automation never guesses intent. |
+| `rerun-owed` | the builder, beside the evidence comment naming the head. Only a **started** rerun clears it: `ci-rerun` removes it on success and leaves it standing on a refusal, so the label is the ask and its absence the answer. |
 | `merge-next` | you or the agent owning the queue. Which PR lands first is a judgement about how they conflict, so the workflow never sets it — it only **clears** it, the moment the PR stops being something a human could merge. |
 | `bug` / `enhancement` / `documentation` | you, on issues only — a PR's type already lives in its title. |
 

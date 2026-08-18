@@ -1,0 +1,24 @@
+name: Refs guard
+# The body-aware guard is its own caller because `edited` is load-bearing: a PR
+# body can gain a closing keyword AFTER it opens, with no push to wake ordinary
+# CI (ceremony#200, #218). Rig runs into exactly that — an issue whose criteria
+# outlive the merge is referenced with `Refs`, never `Closes` (#151), and until
+# now nothing here enforced it: #144's amendment had to direct PR #145 to drop
+# a `Closes #107` line by hand. The guard refuses the contradiction, a body
+# promising `Refs #N` while GitHub's closing-issue graph at the head says #N
+# closes; an ordinary `Closes #N` PR is untouched.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  refs-not-closing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: heavy-duty/ceremony/actions/refs-not-closing@0.7.4

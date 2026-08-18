@@ -1,0 +1,28 @@
+name: ci-rerun
+# Rerun servicing (ceremony#424). Every rig build PR is a FORK PR, so its
+# `pull_request` run lives in this base repository and rerunning it needs
+# `actions: write` HERE — a right no fleet identity holds, which is why a
+# flaky red head used to wait on a human pressing the button. `rerun-owed`
+# names that state and this caller services it: the builder sets the label
+# with its evidence comment (`🔁 rerun owed at head <sha>`), the workflow
+# starts the one rerun, removes the label, and comments the new attempt's URL.
+# A refusal LEAVES THE LABEL STANDING and says which gate refused — a refusal
+# is not a clear. No `runner:` input: rig's ceremony jobs run GitHub-hosted.
+on:
+  # pull_request_target, not pull_request: a fork PR's pull_request run holds a
+  # read-only token and can neither rerun a run nor remove the label.
+  pull_request_target:
+    types: [labeled]
+permissions:
+  # COPY THIS BLOCK INTACT — naming any permission sets every unnamed one to
+  # `none`, and each of the three is load-bearing: without `actions: write` the
+  # rerun call returns 403 and the job reds with the label still standing;
+  # without `pull-requests: write` it can neither clear the label nor say why;
+  # without `contents: read` the checkout of this repo's default branch fails,
+  # so the job never reaches the gate that reads .github/labels.conf.
+  contents: read        # .github/labels.conf (the fleet roster) and the implementation — never the head
+  actions: write        # the rerun no fork PR author can start; the whole reason this exists
+  pull-requests: write  # remove rerun-owed, post the outcome
+jobs:
+  ci-rerun:
+    uses: heavy-duty/ceremony/.github/workflows/ci-rerun.yml@0.7.4
