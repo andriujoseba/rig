@@ -71,22 +71,26 @@ commands:
       go stale here. Writes nothing, needs no root, makes no network call,
       and therefore also runs on a pristine Debian box rig has never
       bootstrapped, where the provenance block reads 'not bootstrapped'.
-  runner install --repo <owner/repo> [options]
+  runner install --repo <owner/repo> [--name <name>] [options]
       GitHub Actions runner as a systemd service under an unprivileged
-      user — outbound-only, no Docker. Prompts for the short-lived
-      registration token (RUNNER_TOKEN env overrides). Run as root.
-  runner status [--user <name>]
-      What this box's runner is registered to: repo, name, labels, unit.
-      Reads the box only — no token, no network call. Run as root.
-  runner remove [--local] [--user <name>]
-      Take the service down and deregister the runner. Prompts for the
-      short-lived removal token (RUNNER_REMOVE_TOKEN env overrides).
+      user — outbound-only, no Docker. A box runs any number of runners
+      and --name is the key; omit it and you get this host's name, or the
+      runner the box already has. Prompts for the short-lived registration
+      token (RUNNER_TOKEN env overrides). Run as root.
+  runner status [--name <name>] [--user <name>]
+      Every runner on this box: repo, dir, unit and whether rig manages
+      it — runners registered by hand are listed too. --name for one in
+      detail. Reads the box only — no token, no network call. Run as root.
+  runner remove [--name <name>|--all] [--local] [--user <name>]
+      Take the service down and deregister the runner. --name is required
+      where the box runs more than one; --all is the teardown. Prompts for
+      the short-lived removal token (RUNNER_REMOVE_TOKEN env overrides).
       Run as root.
-  runner repoint --repo <owner/repo> [options]
-      Move an installed runner to another repository — deregister, then
-      re-register, reusing the binary already on the box. Needs a removal
-      token for the old repo and a registration token for the new one.
-      Run as root.
+  runner repoint --repo <owner/repo> [--name <name>] [options]
+      Move one runner to another repository — deregister, then
+      re-register, reusing the binary already on the box. --name is
+      required where the box runs more than one. Needs a removal token for
+      the old repo and a registration token for the new one. Run as root.
   users apply --file <path>
       Converge named operator accounts from a declarative users file, on
       every class: groups by role (admin/rig/box), passwords locked always,

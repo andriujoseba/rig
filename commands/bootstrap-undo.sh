@@ -14,7 +14,13 @@ runner_installed=0
 if [ -n "${RIG_RUNNER_DIR:-}" ]; then
   [ -e "$RIG_RUNNER_DIR/.runner" ] && runner_installed=1
 else
-  for runner_config in /home/*/actions-runner/.runner /root/actions-runner/.runner; do
+  # Two levels, because a box runs any number of runners (#166): the legacy
+  # single-instance layout puts .runner in actions-runner/ itself, and every
+  # named instance puts it in actions-runner/<name>/. A glob that only knew
+  # the first would let undo proceed on a box with four registered runners.
+  for runner_config in \
+    /home/*/actions-runner/.runner /home/*/actions-runner/*/.runner \
+    /root/actions-runner/.runner /root/actions-runner/*/.runner; do
     [ -e "$runner_config" ] && runner_installed=1
   done
   compgen -G '/etc/systemd/system/actions.runner.*.service' >/dev/null \

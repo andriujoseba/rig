@@ -261,7 +261,9 @@ names the manual repair. Re-running bootstrap writes the current marker shape.
 
 Undo also refuses while a GitHub runner is installed and points at
 `rig runner remove`, because restoring the local machine while leaving an
-off-box runner registration would create a ghost in the repository. If
+off-box runner registration would create a ghost in the repository. It looks
+for *any* of them — a box running several is the ordinary case, and
+`rig runner remove --all` is what clears it. If
 `tailscale logout` fails, the marker stays in place so the command is retryable.
 
 This is intentionally not a general rollback. It does not uninstall packages,
@@ -923,14 +925,48 @@ runner status` cross-check recorded state against live state and print
 borrow a promise it structurally cannot make. That leaves `rig status` free
 for the machine-wide roll-up it will eventually want to be.
 
-### `rig runner install --repo <owner/repo>`
+### The runner model: a box runs any number of runners
+
+**One box, many runners, and the name is what tells them apart.** A ci-box
+with four runner services is the ordinary way to get concurrency out of one
+host, so `rig runner` is keyed on the runner **name**, never on the box:
+
+| | |
+|---|---|
+| **Instance** | one `actions/runner` install: its own directory, its own `_work`, its own systemd unit. Named. |
+| **Where it lives** | `~github-runner/actions-runner/<name>` — one directory per name, siblings under the same base |
+| **The service user** | shared by default; `--user` separates the cases that need it, such as a deploy box holding per-repo keys |
+| **The selector** | `--name`. `install` creates or converges *that* instance; `status`, `remove` and `repoint` act on *that* one and say so |
+
+Two properties follow, and both are the point:
+
+- **Nothing acts on "the runner" where there is more than one.** `remove` and
+  `repoint` refuse without `--name` and list the candidates, because removing
+  one of four and exiting 0 is a command that looks like it did the whole job.
+  `remove --all` is the teardown that used to be implied.
+- **A runner rig did not create is still visible.** `rig runner status`
+  discovers instances by scanning systemd for `actions.runner.*` units, not by
+  reading a registry rig maintains, so the siblings someone registered with
+  `config.sh` by hand are listed as `unmanaged` rather than left out.
+  `--name` selects them like any other; `install` refuses to register over
+  one, because `config.sh --replace` would deregister it.
+
+**Boxes installed before any of this keep working untouched.** Such a box has
+its runner in `~github-runner/actions-runner` itself rather than in a named
+subdirectory, and rig **adopts that layout in place** — same directory, same
+unit, no re-registration, nothing re-downloaded. Omit `--name` there and
+`install` converges the runner the box already has, exactly as it did before.
+Pass a name and you get a second instance beside it.
+
+### `rig runner install --repo <owner/repo> [--name <name>]`
 
 Runner box only, run after `rig bootstrap runner-server` (the same two-step rhythm
 as `bootstrap control-plane-server` → `coolify install`):
 
 ```sh
 rig bootstrap runner-server --hostname my-ci-box --users ./users
-rig runner install --repo acme/widgets
+rig runner install --repo acme/widgets                 # named for this host
+rig runner install --repo acme/widgets --name ci-2     # a second one beside it
 ```
 
 Installs GitHub's official `actions/runner` as a systemd service under an
@@ -950,7 +986,9 @@ genuinely needs it, and rethink the isolation model then.
   latest release, resolved at install time; e.g. `--version 2.335.1` —
   the latest as of this writing). Pin it when you need a deterministic,
   auditable install.
-- `--name <name>` — runner name (default: this host's hostname)
+- `--name <name>` — which instance to create or converge (default: this
+  host's hostname, or the runner the box already has where that one predates
+  instances). Each name is its own directory, `_work` and unit
 - `--labels <csv>` — runner labels, replacing the `ci-runner` default — keep
   any label your workflows' `runs-on` needs (GitHub adds `self-hosted` itself)
 - `--user <name>` — the unprivileged service user (default: `github-runner`)
@@ -967,34 +1005,63 @@ from stale runners, so freezing it would just make it silently stop taking
 work. The install-time version is a starting point either way; `--version`
 exists for when you want that starting point deterministic and auditable.
 
-Convergent **toward `--repo`** — re-running against the repo this box is
-already on re-uses the binary, skips registration, and never asks for a token.
-Pointed at a *different* repo it **refuses**, and names both: skipping there
-would not be convergence, it would be ignoring the argument — restarting the
-runner on the **old** repo while reporting success, leaving the repo you asked
-for with no runner and its `runs-on` jobs queued forever. Moving a runner
-between repos is a trust-boundary act; that verb is
-[`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo).
+Convergent **toward `--repo`, per instance** — re-running against the repo
+that instance is already on re-uses the binary, skips registration, and never
+asks for a token. Pointed at a *different* repo it **refuses**, and names
+both: skipping there would not be convergence, it would be ignoring the
+argument — restarting the runner on the **old** repo while reporting success,
+leaving the repo you asked for with no runner and its `runs-on` jobs queued
+forever. Moving a runner between repos is a trust-boundary act; that verb is
+[`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo---name-name).
+Running a *second* runner beside it is this command with a new `--name`, and
+the refusal says so.
 
-### `rig runner status`
+A name already held by a runner rig did not create is refused rather than
+re-registered: `config.sh --replace` would deregister that runner and rig
+would report success.
+
+### `rig runner status [--name <name>]`
 
 ```sh
-rig runner status
+rig runner status                 # every runner on this box
+rig runner status --name ci-2     # one of them, in detail
 ```
 
-What this box's runner is registered to — repo, runner name, labels,
-install dir, systemd unit and its state. Reads the runner's own on-disk
-config; no token, no network call. Exits 1 when no runner is installed.
+With no `--name`, every runner on the box: its name, the repo it is
+registered to, its install directory, its systemd unit and state, and whether
+rig manages it. With `--name`, that one in detail, labels included.
 
-The answer to "wait, which repo is this box wired to?" should not require
+**The listing is the feature.** Instances are found both under the runner
+user's `~/actions-runner` and by scanning systemd for `actions.runner.*`
+units, so a runner someone registered by hand shows up flagged `unmanaged`
+instead of being invisible — which is what a box with three hand-rolled
+siblings used to look like through rig.
+
+Reads the runners' own on-disk config; no token, no network call. Exits 1
+when the box runs no runner at all, or when `--name` matches none of the ones
+it runs — and the refusal lists them.
+
+The answer to "wait, which repos is this box wired to?" should not require
 knowing that the config lives in a dotfile under an unprivileged user's home.
 
-### `rig runner remove`
+### `rig runner remove [--name <name>|--all]`
 
 ```sh
-rig runner remove
-rig runner remove --local     # no token; leaves a stale entry to delete by hand
+rig runner remove                 # the one runner, where there is one
+rig runner remove --name ci-2     # say which, where there are several
+rig runner remove --all           # tear the box down
+rig runner remove --local         # no token; leaves a stale entry to delete by hand
 ```
+
+**`--name` is required where the box runs more than one**, and its absence is
+refused with the list. The old command took whichever runner lived in the
+legacy directory, exited 0, and left the rest running.
+
+`--all` removes every runner on the box **including the ones rig did not
+create** — they are the reason a teardown that only knew about rig's would
+leave the box still taking jobs. One removal token serves every runner on the
+same repository; runners on different repositories need their own, so remove
+those by name.
 
 Stops and uninstalls the systemd service, then deregisters the runner from
 GitHub. The binary and its user stay put, so a later `rig runner install`
@@ -1021,15 +1088,26 @@ running service pointed at config that no longer exists.
 
 Convergent — a box with no runner installed exits 0.
 
-### `rig runner repoint --repo <owner/repo>`
+### `rig runner repoint --repo <owner/repo> [--name <name>]`
 
 ```sh
-rig runner repoint --repo acme/widgets
+rig runner repoint --repo acme/widgets                            # the one runner
+rig runner repoint --repo acme/widgets --name ci-2                # say which
+rig runner repoint --repo acme/widgets --name ci-2 --rename ci-b  # and rename it
 ```
 
-Moves an installed runner from one repository to another: deregister,
-re-register, reusing the binary already on the box. It keeps the runner's
-existing name unless you pass `--name`.
+Moves **one** installed runner from one repository to another: deregister,
+re-register, reusing the binary already on the box. It keeps that runner's
+name unless you pass `--rename`.
+
+**`--name` is required where the box runs more than one.** Moving one of four
+while the other three keep taking jobs from the old repo — and reporting
+success — is the bug this selector exists to stop.
+
+> **`--name` used to mean the new name.** It is the selector now, and
+> `--rename` carries the old meaning. A rename moves the identity and not the
+> directory: the instance stays where it is on disk, nothing is
+> re-downloaded, and rig answers to the new name from then on.
 
 This is the verb that was missing. `runner install` can create a runner but
 never move one — pointed at a repo the box is not on, it fails and sends you
@@ -1052,7 +1130,8 @@ prints the exact `runner install` line that finishes the job.
 > finding its runner. Pass `--labels` if yours differ.
 
 Convergent — repointing to the repo it is already on changes nothing, exits 0,
-and never asks for a token.
+and never asks for a token, unless `--rename` asks for a change: that is a
+re-registration and needs both tokens.
 
 ### `rig users apply --file <path>`
 
