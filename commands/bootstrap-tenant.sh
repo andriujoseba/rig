@@ -233,6 +233,46 @@ append_line_once() {
   chown "$TENANT_USER:$TENANT_GROUP" "$file"
 }
 
+# converge_environment_assignment <file> <key> <value> — one literal
+# assignment in a pam_env-compatible environment file. Debian cron and sudo
+# both enter through PAM, so this is the non-shell half of the tenant TMPDIR
+# contract: unattended duty ticks and box's sudo-backed shell/exec paths see
+# the same value. Rewrite atomically, preserving every unrelated line.
+converge_environment_assignment() {
+  local file="$1" key="$2" value="$3" tmp
+  tmp="$(mktemp "${file}.tmp.XXXXXX")"
+  if [ -e "$file" ]; then
+    awk -v key="$key" '
+      $0 !~ "^[[:space:]]*(export[[:space:]]+)?" key "=" { print }
+    ' "$file" > "$tmp"
+  fi
+  printf '%s="%s"\n' "$key" "$value" >> "$tmp"
+  if ! cmp -s "$tmp" "$file" 2>/dev/null; then
+    install -m 0644 "$tmp" "$file"
+    log "converged ${key} in ${file}"
+  fi
+  rm -f "$tmp"
+}
+
+# The agent workload's scratch belongs on the box disk, not its RAM-backed
+# /tmp. 0700 gives the tenant the private-directory equivalent of /tmp's full
+# rwx access; the sticky bit is unnecessary because no other user may enter.
+# The profile reaches box shell/exec (both login-shell paths), while
+# /etc/environment reaches cron's PAM session.
+converge_tenant_tmpdir() {
+  local tenant_tmpdir="$TENANT_HOME/tmp"
+  install -d -m 0700 -o "$TENANT_USER" -g "$TENANT_GROUP" "$tenant_tmpdir"
+  # $HOME expands in the tenant's login shell, not during root's converge.
+  # shellcheck disable=SC2016
+  append_line_once "$TENANT_HOME/.profile" 'export TMPDIR="$HOME/tmp"'
+  converge_environment_assignment "${RIG_ENVIRONMENT_FILE:-/etc/environment}" TMPDIR "$tenant_tmpdir"
+  [ "$(stat -c '%U:%G %a' "$tenant_tmpdir")" = "$TENANT_USER:$TENANT_GROUP 700" ] \
+    || die "tenant scratch directory is not ${TENANT_USER}:${TENANT_GROUP} mode 700: ${tenant_tmpdir} (#164)"
+  runuser -u "$TENANT_USER" -- test -w "$tenant_tmpdir" \
+    || die "tenant scratch directory is not writable by ${TENANT_USER}: ${tenant_tmpdir} (#164)"
+  log "tenant TMPDIR is disk-backed at ${tenant_tmpdir}"
+}
+
 # The binary on PATH is not the effective state — an image can ship crontab
 # with cron.service masked or stopped, and an unarmed timer is exactly the
 # silent-inert box #162 is about. Converge best-effort, then assert what
@@ -283,6 +323,7 @@ if [ "$ROLE" != "staging-box" ]; then
   command -v crontab >/dev/null 2>&1 || die "crontab missing after package install — the duty engine arms itself with cron (#162)"
   # staging-box is exempt with the rest of this block: no agent, no engine.
   converge_cron
+  converge_tenant_tmpdir
 fi
 
 # --- docker ------------------------------------------------------------------
