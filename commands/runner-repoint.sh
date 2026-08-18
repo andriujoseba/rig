@@ -42,6 +42,11 @@ is the one. With several, its absence is refused with the list: moving one of
 four and reporting success is what this flag exists to stop.
 `rig runner status` lists them.
 
+A runner rig did not create is refused here, with the two commands that do
+it explicitly: re-registration goes through `rig runner install`, which
+builds the instance in rig's own layout, so a "move" would leave the
+original directory behind.
+
 Two short-lived tokens, each minted from its OWN repository:
 
   RUNNER_REMOVE_TOKEN   removal token, from the CURRENT repo (not needed
@@ -135,6 +140,20 @@ RUNNER_DIR="$(printf '%s' "$LINE" | cut -f2)"
   || die "runner ${RUNNER_NAME} has no readable directory on this box — rig cannot move it"
 [ -e "$RUNNER_DIR/.runner" ] \
   || die "no runner registered in ${RUNNER_DIR} — use: rig runner install"
+
+# A move is a deregister plus an install, and install creates instances in
+# rig's own layout. Run on a runner rig did not create, it would leave that
+# directory behind and download a fresh runner somewhere else — a move that
+# reports success and moves nothing. status and remove can still reach it; this
+# one verb cannot, and says so rather than half-doing it.
+if [ "$(printf '%s' "$LINE" | cut -f4)" = "unmanaged" ]; then
+  die "runner ${RUNNER_NAME} (${RUNNER_DIR}) was not created by rig, and repoint
+would not move it: re-registering goes through rig runner install, which builds
+the instance in rig's layout and would leave ${RUNNER_DIR} behind.
+Do it as two explicit steps, and rig will own it afterwards:
+  rig runner remove --name ${RUNNER_NAME}
+  rig runner install --repo ${REPO} --name ${RUNNER_NAME}"
+fi
 
 # --- what is it registered to now? ------------------------------------------
 CURRENT_URL="$(runner_repo_url "$RUNNER_DIR")"

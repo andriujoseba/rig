@@ -1730,6 +1730,11 @@ check "runner install: resolves an instance rather than one hardcoded dir" 0 "" 
   grep -q 'runner_resolve_instance' "$ROOT/commands/runner-install.sh"
 check "runner status: discovers by scanning units" 0 "" \
   grep -q 'runner_scan_units' "$ROOT/commands/runner-status.sh"
+# repoint re-registers through install, which builds in rig's layout: run on a
+# runner rig did not create it would leave that directory behind and download a
+# fresh one elsewhere — a move that reports success and moves nothing.
+check "runner repoint: refuses a runner rig did not create" 0 "" \
+  grep -q 'was not created by rig' "$ROOT/commands/runner-repoint.sh"
 # The hardcoded per-box path is what the whole change lifts: no runner command
 # may reconstruct it. The base lives in one function now.
 check "runner commands: no hardcoded actions-runner path remains" 1 "" \

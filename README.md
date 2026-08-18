@@ -1104,6 +1104,13 @@ name unless you pass `--rename`.
 while the other three keep taking jobs from the old repo — and reporting
 success — is the bug this selector exists to stop.
 
+A runner rig did not create is **refused** here, naming the two commands that
+do it explicitly (`remove --name`, then `install --name`). Re-registration
+goes through `rig runner install`, which builds the instance in rig's own
+layout — so a "move" would download a fresh runner elsewhere and leave the
+original directory behind, reporting success. `status` and `remove` reach
+those runners; this one verb does not.
+
 > **`--name` used to mean the new name.** It is the selector now, and
 > `--rename` carries the old meaning. A rename moves the identity and not the
 > directory: the instance stays where it is on disk, nothing is
