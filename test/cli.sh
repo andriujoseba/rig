@@ -1747,6 +1747,83 @@ check "managed: install refuses to register over the hand-rolled one" \
 check "managed: ...and still converges its own" \
   0 "${UNDER_BASE_BOX}/mine	mine" resolve "$UNDER_BASE_BOX" mine 1 "$UNDER_BASE_UNITS"
 
+# Round 4 of #174, @codex-bot-andresmgsl: the OTHER half of the same rule. The
+# walk covers the selected --user's base; every unit whose directory lies
+# outside it falls to the scan branch, which read the name off .runner and then
+# hard-coded the ownership column `unmanaged`. A ci-box separating two repos'
+# runners with --user has rig's own instances out there, and the all-box view
+# — the one `status` with no arguments exists to print — called every one of
+# them somebody else's.
+#
+# CROSS_BOX is the second service user's base, holding rig's `custom-1` (the
+# marker) beside a hand-rolled `theirs` (nothing of rig's). The selected base
+# is MULTI_BOX, so neither is reachable by the walk: both arrive by unit.
+CROSS_BOX="$(mktemp -d)/actions-runner"
+mkdir -p "$CROSS_BOX/custom-1" "$CROSS_BOX/theirs"
+for n in custom-1 theirs; do
+  printf '%s\n' "{\"agentId\":5,\"agentName\":\"${n}\",\"gitHubUrl\":\"https://github.com/acme/widgets\",\"workFolder\":\"_work\"}" \
+    > "$CROSS_BOX/$n/.runner"
+  : > "$CROSS_BOX/$n/config.sh"
+done
+printf '%s\n' 'custom-1' > "$CROSS_BOX/custom-1/.rig-instance"
+# ...and PRE166_BOX is a third user's box rig installed BEFORE #166: the legacy
+# shape, labels recorded, no marker — the marker did not exist yet. Under its
+# own --user the base exemption covers it; from here only the artefact can.
+PRE166_BOX="$(mktemp -d)/actions-runner"
+mkdir -p "$PRE166_BOX"
+printf '%s\n' '{"agentId":6,"agentName":"deploy-1","gitHubUrl":"https://github.com/acme/widgets","workFolder":"_work"}' \
+  > "$PRE166_BOX/.runner"
+printf '%s\n' 'self-hosted,linux' > "$PRE166_BOX/.rig-labels"
+CROSS_UNITS="$(printf 'actions.runner.acme-widgets.custom-1.service\t%s/custom-1\nactions.runner.acme-widgets.theirs.service\t%s/theirs\nactions.runner.acme-widgets.deploy-1.service\t%s\n' \
+  "$CROSS_BOX" "$CROSS_BOX" "$PRE166_BOX")"
+
+# The row @codex-bot-andresmgsl printed, asserted as the row: the tabs are the
+# assertion, because "managed" is a substring of "unmanaged" and the flag is
+# one field of five.
+check "cross-user: rig's own instance outside the base is managed" \
+  0 "	managed	live" lib runner_pick custom-1 "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+check "cross-user: ...and the hand-rolled one beside it is still unmanaged" \
+  0 "	unmanaged	live" lib runner_pick theirs "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+check "cross-user: a pre-#166 install elsewhere is managed by its labels" \
+  0 "	managed	live" lib runner_pick deploy-1 "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+check "cross-user: ...and rig's own under the selected base is unaffected" \
+  0 "	managed	live" lib runner_pick ci-1 "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+# No readable directory is no evidence, and `unmanaged` is what no evidence
+# looks like — the flag must not become a guess in the other direction.
+check "cross-user: a unit whose directory rig cannot read stays unmanaged" \
+  0 "	unmanaged	live" lib runner_pick hand-9 \
+  "$(instances "$MULTI_BOX" "$(printf 'actions.runner.acme-gamma.hand-9.service\t\n')")"
+check "cross-user: an install with no rig artefact at all stays unmanaged" \
+  0 "unmanaged" lib runner_instance_flag "" "$CROSS_BOX/theirs"
+
+# Reach is not ownership. A truthful `managed` on an instance under another
+# service user must NOT become permission to build over it: install chowns
+# BASE_DIR and RUNNER_DIR to its own --user, so converging one from here would
+# re-own that user's runner tree. Refused, naming the user that owns it.
+check "cross-user: install refuses an instance outside this base" \
+  1 "outside ${MULTI_BOX}" resolve "$MULTI_BOX" custom-1 1 "$CROSS_UNITS"
+check "cross-user: ...and names the --user that reaches it" \
+  1 "--user $(id -un)" resolve "$MULTI_BOX" custom-1 1 "$CROSS_UNITS"
+check "cross-user: ...the hand-rolled one is refused as unmanaged, not as reach" \
+  1 "taken by a runner rig did not create" resolve "$MULTI_BOX" theirs 1 "$CROSS_UNITS"
+check "cross-user: ...and an instance in this base still resolves to it" \
+  0 "${MULTI_BOX}/ci-1	ci-1" resolve "$MULTI_BOX" ci-1 1 "$CROSS_UNITS"
+# The layout is one level deep: the base itself and its direct children.
+check "reach: the legacy base itself is in reach" \
+  0 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner
+check "reach: a named sibling is in reach" \
+  0 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner/ci-1
+check "reach: another user's base is not" \
+  1 "" lib runner_dir_in_base /srv/actions-runner /home/other/actions-runner/ci-1
+check "reach: a path deeper than the layout is not" \
+  1 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner/ci-1/_work
+check "reach: a sibling with the base as a name PREFIX is not" \
+  1 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner-2/ci-1
+check "reach: no base reaches nothing" \
+  1 "" lib runner_dir_in_base "" /srv/actions-runner/ci-1
+check "reach: an unknown directory is not in reach" \
+  1 "" lib runner_dir_in_base /srv/actions-runner ""
+
 # Round 2 of #174, non-blocking: the refusal above is by NAME, and there is a
 # second door. A hand-rolled <base>/theirs registered as `other` is correctly
 # refused as --name other — but --name theirs matched no instance, fell through
@@ -1901,9 +1978,17 @@ cat > "$STUBS/systemctl" <<'STUB'
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 case "$1" in
   list-units|list-unit-files) cat "$SYSTEMCTL_UNITS" ;;
-  # The shape the finding turns on: systemd knows the unit and cannot report a
-  # WorkingDirectory for it.
-  show) printf '\n' ;;
+  # Unset, the shape the round 1 finding turns on: systemd knows the unit and
+  # cannot report a WorkingDirectory for it. Set, a "unit<TAB>dir" table — a
+  # box whose runners do NOT all live under the selected user's base, which is
+  # the only way to reach the cross-user paths from the CLI (#174 round 4).
+  show)
+    if [ -n "${SYSTEMCTL_WORKDIRS:-}" ] && [ -r "${SYSTEMCTL_WORKDIRS}" ]; then
+      awk -F'\t' -v u="${*: -1}" '$1 == u { print $2; f = 1 } END { if (!f) print "" }' \
+        "$SYSTEMCTL_WORKDIRS"
+    else
+      printf '\n'
+    fi ;;
   disable) [ -z "${SYSTEMCTL_FAIL:-}" ] || exit 1 ;;
 esac
 exit 0
@@ -2203,6 +2288,65 @@ check "install after a rename: the name it answers to still converges it" \
   0 "already registered" install_run --repo acme/new --name fresh
 check "install after a rename: ...in the directory the rename left it in" \
   0 "" grep -qx 'svc start old' "$SVC_LOG"
+FAKE_HOME=""
+
+# Round 4 of #174, @codex-bot-andresmgsl, executed end to end: a box running a
+# rig instance under a SECOND service user. The listing must call it `managed`,
+# because rig created it — and repoint must still refuse to move it, because
+# the install at the far end runs as the --user given here and chowns the
+# instance directory to it. Fixing the flag without splitting reach from
+# ownership would have walked this straight into a teardown and a chown of
+# another user's tree; the constant was accidentally the only thing stopping
+# it. Driven for real against the stub systemd, so "nothing ran" is an empty
+# call log rather than a source grep.
+FAKE_HOME="$(mktemp -d)"
+mkdir -p "$FAKE_HOME/actions-runner"
+mkinstance "$FAKE_HOME/actions-runner" mine registered
+OTHER_HOME="$(mktemp -d)"
+mkdir -p "$OTHER_HOME/actions-runner"
+mkinstance "$OTHER_HOME/actions-runner" custom-1 registered
+CROSS_SCAN="$(mktemp)"
+printf '%s\n' 'actions.runner.acme-alpha.custom-1.service loaded active running custom-1' \
+  > "$CROSS_SCAN"
+CROSS_WORKDIRS="$(mktemp)"
+printf 'actions.runner.acme-alpha.custom-1.service\t%s/actions-runner/custom-1\n' \
+  "$OTHER_HOME" > "$CROSS_WORKDIRS"
+repoint_cross() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$CROSS_SCAN" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_WORKDIRS="$CROSS_WORKDIRS" SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" \
+    SVC_LOG="$SVC_LOG" RUNNER_REMOVE_TOKEN=removal-token RUNNER_TOKEN=registration-token \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+status_cross() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$CROSS_SCAN" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_WORKDIRS="$CROSS_WORKDIRS" FAKE_HOME="$FAKE_HOME" \
+    "$ROOT/commands/runner-status.sh" "$@" </dev/null
+}
+: > "$SVC_LOG"
+check "cross-user: status calls the other user's rig instance managed" \
+  0 "managed: managed" status_cross --name custom-1
+CROSS_OUT="$(mktemp)"
+status_cross --name custom-1 > "$CROSS_OUT" 2>&1
+check "cross-user: ...and does not warn that rig did not create it" \
+  1 "" grep -q "registered here by hand" "$CROSS_OUT"
+check "cross-user: repoint refuses to move it as this user" \
+  1 "outside ${FAKE_HOME}/actions-runner" \
+  repoint_cross --repo acme/new --name custom-1
+check "cross-user: ...naming the --user that owns it" \
+  1 "--user $(id -un)" repoint_cross --repo acme/new --name custom-1
+check "cross-user: ...and NOTHING was stopped, deregistered or re-registered" \
+  1 "" test -s "$SVC_LOG"
+check "cross-user: ...the registration is untouched" \
+  0 "acme/alpha" cat "$OTHER_HOME/actions-runner/custom-1/.runner"
+check "cross-user: ...and it still answers to its own name" \
+  0 "custom-1" cat "$OTHER_HOME/actions-runner/custom-1/.rig-instance"
+# The verb still works on this box, on the instance it can reach: the refusal
+# is about which base the runner lives in, not about there being two.
+check "cross-user: repoint still moves the instance under this user's base" \
+  0 "repointed to https://github.com/acme/new" \
+  repoint_cross --repo acme/new --name mine --local
+check "cross-user: ...in place, re-using the binary" \
+  0 "" grep -qx 'svc start mine' "$SVC_LOG"
 FAKE_HOME=""
 
 # --- names as path components --------------------------------------------------
