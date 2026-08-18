@@ -205,8 +205,17 @@ runner_merge_instances() {
     done
   fi
 
-  printf '%s' "$units" | while IFS="$(printf '\t')" read -r unit dir; do
-    [ -n "$unit" ] || continue
+  # `%s\n`, not `%s`: $(cat) strips the trailing newline, and `read` returns
+  # non-zero on an unterminated final line — dropping the LAST unit silently,
+  # which on a box with one hand-rolled runner is the whole finding.
+  #
+  # cut, not `read -r unit dir`: TAB is an IFS *whitespace* character, so read
+  # collapses a run of them — and a unit whose WorkingDirectory systemd cannot
+  # report has exactly the empty field that would then shift.
+  printf '%s\n' "$units" | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    unit="$(printf '%s' "$line" | cut -f1)"
+    dir="$(printf '%s' "$line" | cut -f2)"
     if [ -n "$dir" ] && printf '%s' "$managed" | grep -qxF "$dir"; then
       continue
     fi
