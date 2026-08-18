@@ -56,7 +56,10 @@ moving one is `rig runner repoint --repo <owner/repo> --name <name>`, and
 running a SECOND runner beside it is this command with a new --name.
 
 A name already taken by a runner rig did not create is refused rather than
-re-registered: config.sh --replace would deregister that runner.
+re-registered: config.sh --replace would deregister that runner. So is a
+name whose directory holds a runner answering to something else — a
+hand-rolled install, or one `repoint --rename` moved the identity of:
+installing there would adopt that runner, not create this one.
 EOF
 }
 

@@ -1034,6 +1034,15 @@ A name already held by a runner rig did not create is refused rather than
 re-registered: `config.sh --replace` would deregister that runner and rig
 would report success.
 
+A name whose *directory* holds a runner that answers to something else is
+refused for the same reason, one door along. Two boxes reach that state: a
+hand-rolled `~github-runner/actions-runner/mine` registered as `other`, and one
+where [`repoint --rename`](#rig-runner-repoint---repo-ownerrepo---name-name)
+moved the identity and left the directory — `<base>/old` answering to `fresh`.
+Installing into either would adopt the runner already there rather than create
+the one you asked for. The refusal names what the directory answers to, which
+is the name every other rig command wants.
+
 ### `rig runner status [--name <name>]`
 
 ```sh
@@ -1150,6 +1159,12 @@ those runners; this one verb does not.
 > the runner still registered and still taking jobs. Dormant directories count:
 > one an earlier `remove` left behind holds its name just as firmly, and
 > `status` does not list it, so nothing else on the box would warn you.
+>
+> The name it moved *off* does not become free. The directory keeps its old
+> name and the runner in it answers to the new one, so `runner install --name
+> <the old name>` is refused, naming what that directory answers to now —
+> rather than adopting the runner you just renamed and reporting a second one
+> it did not create.
 
 This is the verb that was missing. `runner install` can create a runner but
 never move one — pointed at a repo the box is not on, it fails and sends you
