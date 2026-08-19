@@ -25,8 +25,10 @@ usage: rig template-lint <role-dir>...
 
 Validate role definitions (the heavy-duty/rig-templates shape).
 
-Tenant roles use a *-box directory, tenant template.env schema, a shebang
-install.sh, and non-blank creds.md. Machine roles use a *-server directory
+Tenant roles use a *-box directory and tenant template.env schema. AGENT=yes
+(the default) requires a shebang install.sh and non-blank creds.md; AGENT=no
+refuses agent keys and creds.md and makes install.sh optional. HARDEN_SSHD is
+orthogonal. Machine roles use a *-server directory
 (or exact name workstation), the ROOT_DOOR/HOST/JOIN schema, no creds.md,
 and an optional install.sh which must be non-empty and carry a shebang.
 template.env is parsed as KEY="value" data and never sourced. Every refusal

@@ -42,8 +42,9 @@ RIG_TEMPLATES_PIN=47bb132c81b25658e5b5fb3c2f7d0f2fdb14100d
 
 # The template.env schema. Grammar: blank lines, '#' comments, and
 # KEY="value" — nothing else. Parsed by regex, never sourced.
-TEMPLATE_KEYS_REQUIRED=(USER CONTEXT_PATH CLI_NAME PATH_LINE)
-TEMPLATE_KEYS_OPTIONAL=(CLI_SRC NEEDS_NODE APT_EXTRAS)
+TEMPLATE_KEYS_REQUIRED=(USER)
+TEMPLATE_AGENT_KEYS=(CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE)
+TEMPLATE_KEYS_OPTIONAL=(AGENT HARDEN_SSHD CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE APT_EXTRAS)
 MACHINE_KEYS_REQUIRED=(ROOT_DOOR HOST JOIN)
 
 # templates_source_desc — where the resolved registry came from, for error
@@ -179,14 +180,16 @@ templates_machine_roles() {
 
 # template_parse_env <template.env> — parse against the allowlist. Sets
 # TPL_USER, TPL_CONTEXT_PATH, TPL_CLI_NAME, TPL_CLI_SRC, TPL_PATH_LINE,
-# TPL_NEEDS_NODE (default no), TPL_APT_EXTRAS. Every refusal names the
+# TPL_AGENT (default yes), TPL_HARDEN_SSHD (default no), TPL_NEEDS_NODE
+# (default no), TPL_APT_EXTRAS. Every refusal names the
 # failing key (or line): the box.env discipline — a definition is data, and
 # bad data is refused loudly, never executed to find out.
 # shellcheck disable=SC2034  # the TPL_* globals are this function's OUTPUT, read by the sourcing script
 template_parse_env() {
   local file="$1" line key val n=0 seen=" " k ok
   TPL_USER="" TPL_CONTEXT_PATH="" TPL_CLI_NAME="" TPL_CLI_SRC=""
-  TPL_PATH_LINE="" TPL_NEEDS_NODE="no" TPL_APT_EXTRAS=""
+  TPL_PATH_LINE="" TPL_AGENT="yes" TPL_HARDEN_SSHD="no"
+  TPL_NEEDS_NODE="no" TPL_APT_EXTRAS=""
   [ -f "$file" ] || { printf 'template.env missing: %s\n' "$file" >&2; return 1; }
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n+1))
@@ -208,6 +211,8 @@ template_parse_env() {
     seen="$seen$key "
     case "$key" in
       USER)         TPL_USER="$val" ;;
+      AGENT)        TPL_AGENT="$val" ;;
+      HARDEN_SSHD)  TPL_HARDEN_SSHD="$val" ;;
       CONTEXT_PATH) TPL_CONTEXT_PATH="$val" ;;
       CLI_NAME)     TPL_CLI_NAME="$val" ;;
       CLI_SRC)      TPL_CLI_SRC="$val" ;;
@@ -221,30 +226,53 @@ template_parse_env() {
       printf 'template.env: missing required key: %s\n' "$k" >&2; return 1 ;;
     esac
   done
+  case "$TPL_AGENT" in
+    yes|no) ;;
+    *) printf 'template.env: AGENT: want yes or no, got: %s\n' "$TPL_AGENT" >&2; return 1 ;;
+  esac
+  case "$TPL_HARDEN_SSHD" in
+    yes|no) ;;
+    *) printf 'template.env: HARDEN_SSHD: want yes or no, got: %s\n' "$TPL_HARDEN_SSHD" >&2; return 1 ;;
+  esac
+  if [ "$TPL_AGENT" = "yes" ]; then
+    for k in CONTEXT_PATH CLI_NAME PATH_LINE; do
+      case "$seen" in *" $k "*) ;; *)
+        printf 'template.env: missing required key: %s\n' "$k" >&2; return 1 ;;
+      esac
+    done
+  else
+    for k in "${TEMPLATE_AGENT_KEYS[@]}"; do
+      case "$seen" in *" $k "*)
+        printf 'template.env: %s: not allowed when AGENT=no\n' "$k" >&2; return 1 ;;
+      esac
+    done
+  fi
   # Value shapes — each refusal names its key. USER shares the charset the
   # users file enforces (a leading '-' reads as a usermod flag; '|', ':'
   # corrupt things downstream).
   [[ "$TPL_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
     || { printf 'template.env: USER: invalid user name: %s (want ^[a-z_][a-z0-9_-]{0,31}$)\n' "$TPL_USER" >&2; return 1; }
-  case "$TPL_CONTEXT_PATH" in
-    /*|*..*|'') printf 'template.env: CONTEXT_PATH: must be relative to the tenant home, without "..": %s\n' "$TPL_CONTEXT_PATH" >&2; return 1 ;;
-  esac
-  [[ "$TPL_CLI_NAME" =~ ^[a-z0-9][a-z0-9._-]*$ ]] \
-    || { printf 'template.env: CLI_NAME: not a sane command name: %s\n' "$TPL_CLI_NAME" >&2; return 1; }
-  # A literal '~/' on purpose (SC2088): the value is DATA — the mechanism
-  # expands it to the tenant home by string substitution, never the shell.
-  # shellcheck disable=SC2088
-  case "$TPL_CLI_SRC" in
-    *..*) printf 'template.env: CLI_SRC: must not contain "..": %s\n' "$TPL_CLI_SRC" >&2; return 1 ;;
-    ''|'~/'*|/*) ;;
-    *) printf 'template.env: CLI_SRC: must be absolute or ~/-relative: %s\n' "$TPL_CLI_SRC" >&2; return 1 ;;
-  esac
-  case "$TPL_NEEDS_NODE" in
-    yes|no) ;;
-    *) printf 'template.env: NEEDS_NODE: want yes or no, got: %s\n' "$TPL_NEEDS_NODE" >&2; return 1 ;;
-  esac
-  [ -n "$TPL_PATH_LINE" ] \
-    || { printf 'template.env: PATH_LINE: must not be empty\n' >&2; return 1; }
+  if [ "$TPL_AGENT" = "yes" ]; then
+    case "$TPL_CONTEXT_PATH" in
+      /*|*..*|'') printf 'template.env: CONTEXT_PATH: must be relative to the tenant home, without "..": %s\n' "$TPL_CONTEXT_PATH" >&2; return 1 ;;
+    esac
+    [[ "$TPL_CLI_NAME" =~ ^[a-z0-9][a-z0-9._-]*$ ]] \
+      || { printf 'template.env: CLI_NAME: not a sane command name: %s\n' "$TPL_CLI_NAME" >&2; return 1; }
+    # A literal '~/' on purpose (SC2088): the value is DATA — the mechanism
+    # expands it to the tenant home by string substitution, never the shell.
+    # shellcheck disable=SC2088
+    case "$TPL_CLI_SRC" in
+      *..*) printf 'template.env: CLI_SRC: must not contain "..": %s\n' "$TPL_CLI_SRC" >&2; return 1 ;;
+      ''|'~/'*|/*) ;;
+      *) printf 'template.env: CLI_SRC: must be absolute or ~/-relative: %s\n' "$TPL_CLI_SRC" >&2; return 1 ;;
+    esac
+    case "$TPL_NEEDS_NODE" in
+      yes|no) ;;
+      *) printf 'template.env: NEEDS_NODE: want yes or no, got: %s\n' "$TPL_NEEDS_NODE" >&2; return 1 ;;
+    esac
+    [ -n "$TPL_PATH_LINE" ] \
+      || { printf 'template.env: PATH_LINE: must not be empty\n' >&2; return 1; }
+  fi
   # Every word must be a sane package name — the list is handed to apt-get
   # unquoted by design, and this is what keeps an option ('-o …') or a path
   # from riding in through the data file.
@@ -363,12 +391,23 @@ template_lint() {
   }
   if [ "$family" = "tenant" ]; then
     template_parse_env "$dir/template.env" || return 1
-    [ -s "$dir/install.sh" ] \
-      || { printf '%s: install.sh missing or empty\n' "$role" >&2; return 1; }
-    head -n1 "$dir/install.sh" | grep -q '^#!' \
-      || { printf '%s: install.sh has no shebang\n' "$role" >&2; return 1; }
-    grep -q '[^[:space:]]' "$dir/creds.md" 2>/dev/null \
-      || { printf '%s: creds.md missing or blank (the context renderer splices it in — a blank paragraph would ship a context file with a hole)\n' "$role" >&2; return 1; }
+    if [ "$TPL_AGENT" = "yes" ]; then
+      [ -s "$dir/install.sh" ] \
+        || { printf '%s: install.sh missing or empty\n' "$role" >&2; return 1; }
+      head -n1 "$dir/install.sh" | grep -q '^#!' \
+        || { printf '%s: install.sh has no shebang\n' "$role" >&2; return 1; }
+      grep -q '[^[:space:]]' "$dir/creds.md" 2>/dev/null \
+        || { printf '%s: creds.md missing or blank (the context renderer splices it in — a blank paragraph would ship a context file with a hole)\n' "$role" >&2; return 1; }
+    else
+      [ ! -e "$dir/creds.md" ] \
+        || { printf '%s: creds.md is not allowed when AGENT=no\n' "$role" >&2; return 1; }
+      if [ -e "$dir/install.sh" ]; then
+        [ -s "$dir/install.sh" ] \
+          || { printf '%s: install.sh is empty\n' "$role" >&2; return 1; }
+        head -n1 "$dir/install.sh" | grep -q '^#!' \
+          || { printf '%s: install.sh has no shebang\n' "$role" >&2; return 1; }
+      fi
+    fi
   else
     machine_template_parse_env "$dir/template.env" || return 1
     [ ! -e "$dir/creds.md" ] \

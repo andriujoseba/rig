@@ -456,8 +456,8 @@ same harness as everything else — and re-runnable on an *existing* box to
 converge it to a new spec instead of re-minting it. One convergence engine;
 the guests were the hole.
 
-It is **one mechanism, parameterized per DEFINITION** (#110), not four
-hand-maintained scripts. The agent-tenant definitions live in the
+It is **one mechanism, parameterized per DEFINITION** (#110), not
+hand-maintained role branches. All tenant definitions live in the
 **[heavy-duty/rig-templates](https://github.com/heavy-duty/rig-templates)
 registry** — one directory per role (`template.env`, the allowlisted data
 table rig parses and never sources; `install.sh`, the CLI install; `creds.md`,
@@ -466,9 +466,11 @@ there, never a mechanism edit here (#109 was the evidence: adding kimi, pure
 data, meant editing six files in this repo). Which `-box` roles exist is the
 registry's fact; `rig bootstrap <anything>-box` dispatches on the family
 suffix and refuses an unknown role by listing what the resolved registry
-actually contains. `staging-box` is the one in-tree tenant — mechanism-adjacent
-(sshd hardening through the shared `lib/sshd.sh`, docker, no agent), user
-`ops`, box#69's server posture with `root-door=open` acceptance.
+actually contains. Tenant definitions default to `AGENT="yes"` and
+`HARDEN_SSHD="no"`; `AGENT="no"` removes the CLI, context, node and creds
+contract, while `HARDEN_SSHD="yes"` independently invokes the shared
+`lib/sshd.sh` mechanism. The registry's `staging-box` data selects user `ops`,
+no agent, and box#69's hardened server posture.
 
 **Where the registry comes from — precedence high to low:**
 

@@ -12,17 +12,16 @@
 # role (template.env, install.sh, creds.md), resolved through lib/templates.sh
 # (RIG_TEMPLATES_DIR > RIG_TEMPLATES_REF > the in-tree pin) — so adding a
 # tenant is a data PR there, never an edit here (#109 is the scar: adding
-# kimi, pure data, meant editing six files in this repo). staging-box is the
-# one in-tree tenant: it is mechanism-adjacent (sshd hardening, docker — no
-# agent, no CLI, no context file), so it converges from rig's own tree.
+# kimi, pure data, meant editing six files in this repo). Agentless and
+# hardened tenants are registry data too: AGENT/HARDEN_SSHD select those
+# orthogonal mechanism paths without naming a role here.
 #
 # Creds-free BY CONTRACT: box auto-runs these at mint ('box exec … rig
 # bootstrap claude-box'), so every path here is non-interactive and nothing joins
 # or admits — no tailnet, no keys, no prompts. That is also why the registry
 # fetch is UNAUTHENTICATED: a mint holds nothing to authenticate with.
-# staging-box's tailnet join stays operator-run ('rig bootstrap
-# workload-server' through 'box shell'), exactly the creds split box#69
-# designed.
+# A server tenant's tailnet join stays operator-run ('rig bootstrap
+# workload-server' through 'box shell'), exactly the creds split box#69 designed.
 # Convergent: safe to re-run; a second run changes nothing.
 set -euo pipefail
 
@@ -32,7 +31,7 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=SCRIPTDIR/lib/users-config.sh
 . "$HERE/lib/users-config.sh"    # read_role_marker / root_door_of
 # shellcheck source=SCRIPTDIR/lib/sshd.sh
-. "$HERE/lib/sshd.sh"            # harden_sshd (the staging-box tenant)
+. "$HERE/lib/sshd.sh"            # harden_sshd (definitions carrying HARDEN_SSHD=yes)
 # shellcheck source=SCRIPTDIR/lib/manifest.sh
 . "$HERE/lib/manifest.sh"        # manifest_stamp — provenance, written beside the marker
 
@@ -48,20 +47,14 @@ Box TENANT roles — what a box-minted guest becomes. box mints the thin,
 creds-free seed (base image, user, rig preinstalled); this converges the
 tenant on top, and re-runs converge an existing box to a new spec.
 
-  <role>-box          an agent tenant DEFINED IN THE REGISTRY
-                      (heavy-duty/rig-templates — claude-box, codex-box,
-                      grok-box, kimi-box, …): base tooling (git, gh, tmux, …),
-                      docker, the agent's CLI on the system PATH, and the
-                      agent-context file — including the box#80 guard: never
-                      run `box setup-host` or the drill inside a box.
-  staging-box         the server tenant (box#69's posture), in rig's own
-                      tree: docker + sshd hardening. The tailnet workload
-                      join is deliberately NOT here — it holds a credential,
-                      so it stays operator-run: `box shell` → `sudo rig
-                      bootstrap workload-server` with a tagged pre-auth key.
+  <role>-box          a tenant DEFINED IN THE REGISTRY
+                      (heavy-duty/rig-templates). Agent definitions converge
+                      base tooling, docker, their CLI and context file;
+                      AGENT="no" definitions omit that agent surface.
+                      HARDEN_SSHD="yes" adds the shared server hardening.
 
   --user <name>       the tenant user the box seed created (default: the
-                      definition's USER; staging-box defaults to `ops`)
+                      definition's USER)
 
 The registry source is three knobs, precedence high to low:
   RIG_TEMPLATES_DIR   a local folder (no fetch — the offline/test path, and
@@ -82,14 +75,13 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  staging-box) shift ;;
   *-box)
     # The family suffix is the whole gate here — WHICH '-box' roles exist is
     # the resolved registry's fact, checked below, so a template added to the
     # registry is mintable with zero code changes in rig (#110).
     shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "tenant role required (a '-box' role from the template registry, or staging-box)" 2 ;;
+  "") usage >&2; die "tenant role required (a '-box' role from the template registry)" 2 ;;
   *) die "unknown tenant role: $ROLE — tenant roles carry the '-box' family suffix (#76); the machine roles are control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom" 2 ;;
 esac
 # The suffix rule above admits ANY '-box' name, so the charset is pinned
@@ -114,16 +106,31 @@ while [ $# -gt 0 ]; do
     --hostname|--root-door|--host|--join)
       # The machine-role traits, refused with a story rather than "unknown
       # flag": a tenant is a guest, not a tailnet machine — its shape comes
-      # from the box seed, and the one trait-shaped thing a staging-box guest
+      # from the box seed, and the one trait-shaped thing a server guest
       # eventually does (join the tailnet as a workload) is deliberately not
       # here: it holds a credential, so it stays operator-run.
-      die "tenant roles have no traits: $1 belongs to the machine roles (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom). A tenant box's shape comes from its seed; staging-box's tailnet join is operator-run via 'rig bootstrap workload-server'. The METAL that hosts these guests is 'rig bootstrap staging-server'." 2 ;;
+      die "tenant roles have no traits: $1 belongs to the machine roles (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom). A tenant box's shape comes from its seed; a server tenant's tailnet join is operator-run via 'rig bootstrap workload-server'. The METAL that hosts these guests is 'rig bootstrap staging-server'." 2 ;;
     --ts-tag)
       [ $# -ge 2 ] && shift
-      die "--ts-tag is gone and tenant roles never join the tailnet anyway. staging-box's join is operator-run via 'rig bootstrap workload-server', where the tag comes from the pre-auth key." 2 ;;
+      die "--ts-tag is gone and tenant roles never join the tailnet anyway. A server tenant's join is operator-run via 'rig bootstrap workload-server', where the tag comes from the pre-auth key." 2 ;;
     *) die "unknown flag: $1" 2 ;;
   esac
 done
+
+# --- the definition ----------------------------------------------------------
+# Resolved and parsed before marker policy: whether a tenant carries an agent
+# and whether it hardens sshd are registry facts, never role-name branches.
+# This is also the mint-time guard for sources that registry CI never saw.
+trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
+templates_resolve \
+  || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
+TPL_DIR="$REGISTRY_DIR/$ROLE"
+if [ ! -f "$TPL_DIR/template.env" ]; then
+  die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— a misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
+fi
+template_parse_env "$TPL_DIR/template.env" \
+  || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
+TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 
 # --- guards ------------------------------------------------------------------
 # A tenant role converges a box GUEST. A box already carrying a machine-role
@@ -133,17 +140,13 @@ done
 # markers (repo precedent: the coolify marker warning). Two refusals, one
 # tolerance:
 #   - host=yes  → refuse, every tenant: a VM HOST is the opposite of a guest.
-#     Names the staging PAIR out loud, because whoever lands here has the two
-#     halves confused: the metal is `staging-server`, the guest `staging-box`.
 #   - a root-door policy (agent tenants) → refuse: an agent box is never a
 #     tailnet machine.
-#   - root-door=open with host=no (staging-box only) → PROCEED, and leave the
+#   - root-door=open with host=no (agentless tenants) → PROCEED, and leave the
 #     marker alone: that is the guest AFTER its operator-run workload join, and
 #     re-converging docker+hardening on it is exactly what convergence is for.
 #     ONLY that shape — any other door policy (say root-door=closed, via
-#     `custom`) is a machine rig built on purpose, and staging-box hardening it
-#     with open-door rules would die with root-door=open-specific messaging on a
-#     box that was never one.
+#     `custom`) is a machine rig built on purpose, not this tenant.
 #
 # "Names a root-door policy" IS this guard's "is this a machine marker?" test —
 # a tenant marker deliberately carries none — so it must be asked through
@@ -158,45 +161,17 @@ EXISTING_MARKER="$(read_role_marker "$MARKER_PATH")"
 EXISTING_ROOT_DOOR="$(root_door_of "$EXISTING_MARKER")"
 case "$EXISTING_MARKER" in
   *host=yes*)
-    die "this box hosts VMs (${EXISTING_MARKER}) — a tenant role converges box GUESTS, never the host under them. You want the other half of the pair: the metal is 'rig bootstrap staging-server', and the guests it mints are 'staging-box'." ;;
+    die "this box hosts VMs (${EXISTING_MARKER}) — a tenant role converges box GUESTS, never the host under them. Bootstrap the metal with a machine role, not a registry tenant." ;;
 esac
 if [ -n "$EXISTING_ROOT_DOOR" ]; then
-  if [ "$ROLE" != "staging-box" ]; then
+  if [ "$TPL_AGENT" = "yes" ]; then
     die "this box already carries a machine role (${EXISTING_MARKER}) — the agent tenants converge box guests, never tailnet machines. If this really is a guest, remove ${MARKER_PATH} and re-run."
   fi
   # A `conflict` marker lands here too, and refuses: a box whose two door
-  # claims disagree is emphatically not the one shape staging-box tolerates.
+  # claims disagree is not the open-door workload shape this tenant tolerates.
   if [ "$EXISTING_ROOT_DOOR" != "open" ]; then
-    die "this box carries a machine role whose root door is not open (${EXISTING_MARKER}) — staging-box tolerates only the workload-joined guest (root-door=open host=no, or its pre-#77 spelling class=server). If this really is a staging-box guest, remove ${MARKER_PATH} and re-run."
+    die "this box carries a machine role whose root door is not open (${EXISTING_MARKER}) — an agentless tenant tolerates only the workload-joined guest (root-door=open host=no, or its pre-#77 spelling class=server). If this really is the requested guest, remove ${MARKER_PATH} and re-run."
   fi
-fi
-
-# --- the definition ----------------------------------------------------------
-# Resolved and parsed BEFORE the root check (but after the marker guards,
-# which need no definition and must stay refusable with no registry in
-# reach), so the two refusals a definition can earn — unknown role (listing
-# what the resolved source actually contains) and malformed data (naming the
-# failing key) — are testable non-root, offline, via RIG_TEMPLATES_DIR
-# fixtures. The parse is the mint's
-# own guard, deliberately duplicating the registry CI's lint: CI protects the
-# registry, this protects a mint served through RIG_TEMPLATES_REPO/_DIR that
-# CI never saw. template.env is parsed, NEVER sourced — a definition cannot
-# execute arbitrary shell through its data file; install.sh is the one
-# deliberately executable part, and it runs only after the root check below.
-trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
-TPL_DIR=""
-if [ "$ROLE" = "staging-box" ]; then
-  TENANT_USER="${TENANT_USER_OVERRIDE:-ops}"   # box#69's ops
-else
-  templates_resolve \
-    || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
-  TPL_DIR="$REGISTRY_DIR/$ROLE"
-  if [ ! -f "$TPL_DIR/template.env" ]; then
-    die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— and staging-box is in rig's own tree. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
-  fi
-  template_parse_env "$TPL_DIR/template.env" \
-    || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
-  TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 fi
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -312,11 +287,16 @@ converge_cron() {
 export DEBIAN_FRONTEND=noninteractive
 log "installing base packages (tenant ${ROLE})"
 apt-get update -qq
-if [ "$ROLE" = "staging-box" ]; then
+if [ "$TPL_AGENT" = "no" ]; then
   # openssh-server: the hardening drop-in below targets /etc/ssh/sshd_config.d/,
-  # which only exists once the package is installed — pristine container/VM
-  # images (and thin seeds) do not ship it.
-  apt-get install -y -qq curl ca-certificates tmux openssh-server
+  # which only exists once the package is installed. Agentless tenants keep
+  # the small server toolbelt; HARDEN_SSHD decides whether sshd joins it.
+  # shellcheck disable=SC2086
+  if [ "$TPL_HARDEN_SSHD" = "yes" ]; then
+    apt-get install -y -qq curl ca-certificates tmux openssh-server $TPL_APT_EXTRAS
+  else
+    apt-get install -y -qq curl ca-certificates tmux $TPL_APT_EXTRAS
+  fi
 else
   # The shared agent toolbelt the templates carried, plus the definition's
   # APT_EXTRAS (claude-box's zsh rides there). Unquoted on purpose — it is a
@@ -325,23 +305,26 @@ else
   # run the cron-driven duty engine, whose unprivileged installer can detect
   # a missing cron but never apt-get it (#162).
   # shellcheck disable=SC2086
-  apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential cron $TPL_APT_EXTRAS
+  if [ "$TPL_HARDEN_SSHD" = "yes" ]; then
+    apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential cron openssh-server $TPL_APT_EXTRAS
+  else
+    apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential cron $TPL_APT_EXTRAS
+  fi
 fi
 # Assert the effective toolbelt, not apt's exit code — tmux is the box#65
 # contract ('box tmux' runs tmux new-session inside every box) and gh is how
 # the operator's git credential lands.
 command -v tmux >/dev/null 2>&1 || die "tmux missing after package install — 'box tmux' (box#65) needs it"
-if [ "$ROLE" != "staging-box" ]; then
+if [ "$TPL_AGENT" = "yes" ]; then
   command -v gh  >/dev/null 2>&1 || die "gh missing after package install"
   command -v git >/dev/null 2>&1 || die "git missing after package install"
   command -v crontab >/dev/null 2>&1 || die "crontab missing after package install — the duty engine arms itself with cron (#162)"
-  # staging-box is exempt with the rest of this block: no agent, no engine.
+  # Agentless tenants are exempt with the rest of this block: no duty engine.
   converge_cron
 fi
 
 # --- docker ------------------------------------------------------------------
-# Every tenant gets docker (the templates all carried it; staging-box's workloads run
-# their workloads in it). Docker's own installer, convergence-guarded — its
+# Every tenant gets docker. Docker's own installer, convergence-guarded — its
 # script is not a no-op when docker exists, so rig supplies the guard.
 if ! command -v docker >/dev/null 2>&1; then
   log "installing docker (get.docker.com)"
@@ -383,7 +366,7 @@ node_ok() {
   major="$(node --version 2>/dev/null | sed -E 's/^v([0-9]+)\..*$/\1/')"
   [ "${major:-0}" -ge 22 ] 2>/dev/null
 }
-if [ "$ROLE" != "staging-box" ] && [ "$TPL_NEEDS_NODE" = "yes" ]; then
+if [ "$TPL_AGENT" = "yes" ] && [ "$TPL_NEEDS_NODE" = "yes" ]; then
   if node_ok; then
     log "node $(node --version) already present"
   else
@@ -414,7 +397,7 @@ fi
 # in the org, why the default ref is a reviewed in-tree pin, and why the data
 # file beside it is parsed rather than sourced.
 CLI="" CLI_SRC=""
-if [ "$ROLE" != "staging-box" ]; then
+if [ "$TPL_AGENT" = "yes" ]; then
   CLI="$TPL_CLI_NAME"
   # '~/' in CLI_SRC is data — expanded to the tenant home HERE, by string
   # substitution, never by the shell (hence the literal quoted tilde, SC2088).
@@ -458,6 +441,12 @@ if [ "$ROLE" != "staging-box" ]; then
   # The definition's installer may change the login shell (claude-box changes
   # it to zsh), so converge and assert TMPDIR only after that installer ran.
   converge_tenant_tmpdir
+elif [ -e "$TPL_DIR/install.sh" ]; then
+  log "running optional install hook (${ROLE}'s install.sh)"
+  TENANT_USER="$TENANT_USER" TENANT_HOME="$TENANT_HOME" \
+    TENANT_GROUP="$TENANT_GROUP" ROLE="$ROLE" \
+    bash "$TPL_DIR/install.sh" \
+    || die "${ROLE}'s install.sh failed — the definition is $(templates_source_desc)"
 fi
 
 # --- the agent-context file --------------------------------------------------
@@ -466,9 +455,8 @@ fi
 # inside a box; the box you are in is not a host you own") — is MECHANISM,
 # rendered from lib/templates.sh ONCE for all agents, never copy-pasted per
 # template; only the creds paragraph is the definition's (creds.md).
-# cmp-guarded like every file rig converges. staging-box has no agent and no
-# context file.
-if [ "$ROLE" != "staging-box" ]; then
+# cmp-guarded like every file rig converges. AGENT=no has no context file.
+if [ "$TPL_AGENT" = "yes" ]; then
   CTX_PATH="$TENANT_HOME/$TPL_CONTEXT_PATH"
   CTX_DIR="$(dirname "$CTX_PATH")"
   if [ ! -d "$CTX_DIR" ]; then
@@ -489,13 +477,10 @@ if [ "$ROLE" != "staging-box" ]; then
   rm -f "$CTX_TMP"
 fi
 
-# --- staging-box server posture --------------------------------------------------
-# box#69's posture, minus the join: docker (above) + sshd hardening, through
-# the SAME code the machine roles use (lib/sshd.sh) — the staging-box guest is a
-# workload server in waiting, and its door must never be password-open even
-# before the operator joins it. root-door=open: root SSH stays the control
-# plane's future automation door.
-if [ "$ROLE" = "staging-box" ]; then
+# --- optional server posture -------------------------------------------------
+# HARDEN_SSHD=yes invokes the SAME code the machine roles use. root-door=open:
+# root SSH stays the control plane's future automation door.
+if [ "$TPL_HARDEN_SSHD" = "yes" ]; then
   harden_sshd open
 fi
 
@@ -503,9 +488,9 @@ fi
 # Same ground truth the machine roles write, tenant-shaped: no root-door trait
 # at all (a tenant has no root-door policy of its own — close-root fails closed
 # on it), and host=no so `rig users apply` box-role gating keeps working.
-# staging-box SKIPS the write when a machine marker is already present: after
-# the operator-run workload join, the workload marker is the truer statement and
-# rig never clobbers state a joined box earned.
+# Agentless tenants skip the write when a machine marker is already present:
+# after the operator-run workload join, the workload marker is the truer
+# statement and rig never clobbers state a joined box earned.
 #
 # "Is a machine marker already here?" is the same question the guard above
 # asks, and is asked the same way — through root_door_of, so both the current
@@ -554,7 +539,7 @@ else
 fi
 
 log "done — tenant ${ROLE}, user ${TENANT_USER}"
-if [ "$ROLE" = "staging-box" ]; then
+if [ "$TPL_AGENT" = "no" ]; then
   log "next (operator-run, holds a credential): box shell → sudo rig bootstrap workload-server --hostname <name> with a tagged pre-auth key"
 else
   log "next: creds stay with the operator — ${CLI} authenticates through its own interactive login when a human decides"
