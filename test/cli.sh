@@ -1621,6 +1621,906 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# runner instances (#166). A box runs any number of runners, keyed by name.
+#
+# The bug was never the missing feature — it was the silent partial truth: on a
+# ci-box with four runner services, `status` reported one, `remove` deregistered
+# one and exited 0, and `repoint` moved one while the other three kept taking
+# jobs from the old repo. Every one of those looked like it did the whole job.
+#
+# The arg surfaces are exercised through the CLI; the rules are exercised
+# through the shared lib against fixture directories, the same way the repo
+# guard above is and for the same reason — reaching them via the CLI needs root
+# AND really-registered runners, which this harness cannot fabricate. Nothing
+# here registers anything or talks to GitHub.
+# ---------------------------------------------------------------------------
+check "runner install: name needs value"     2 "needs a value" "$ROOT/commands/runner-install.sh" --repo acme/widgets --name
+check "runner install: rejects a name with a slash" \
+  2 "--name must be" "$ROOT/commands/runner-install.sh" --repo acme/widgets --name ci/1
+check "runner install: rejects .. as a name" \
+  2 "--name must be" "$ROOT/commands/runner-install.sh" --repo acme/widgets --name ..
+check "runner install: rejects an empty name" \
+  2 "--name must be" "$ROOT/commands/runner-install.sh" --repo acme/widgets --name ""
+check "runner install: accepts an ordinary name (gets past parsing to the root check)" \
+  1 "must run as root" env RUNNER_TOKEN=x "$ROOT/commands/runner-install.sh" --repo acme/widgets --name ci-1 --version 2.335.1
+check "runner status: name needs value"      2 "needs a value" "$ROOT/commands/runner-status.sh" --name
+check "runner remove: name needs value"      2 "needs a value" "$ROOT/commands/runner-remove.sh" --name
+check "runner remove: --all and --name are exclusive" \
+  2 "mutually exclusive" "$ROOT/commands/runner-remove.sh" --all --name ci-1
+check "runner repoint: name needs value"     2 "needs a value" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --name
+check "runner repoint: rename needs value"   2 "needs a value" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --rename
+check "runner repoint: rejects a bad rename" \
+  2 "--rename must be" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --rename ci/1
+
+# --user still separates service users, and --local on remove is untouched:
+# both are named in the issue's "must remain true" list.
+check "runner install: --user survives instances"  0 "--user <name>" "$ROOT/commands/runner-install.sh" --help
+check "runner remove: --local survives instances"  0 "--local" "$ROOT/commands/runner-remove.sh" --help
+check "runner remove: --user survives instances"   0 "--user <name>" "$ROOT/commands/runner-remove.sh" --help
+
+# --- fixture boxes ------------------------------------------------------------
+# lib <fn> <args...> — run one shared-lib function in a clean shell, exactly as
+# the commands call it. Stdout and stderr both land in the check's output.
+lib() {
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    fn="$2"; shift 2
+    "$fn" "$@"' _ "$ROOT" "$@"
+}
+
+# LEGACY_BOX: one runner in the pre-instances layout — .runner and the unpacked
+# tarball sit in the base itself, with no name anywhere in the path. This is
+# every box installed before #166, and it must converge untouched.
+LEGACY_BOX="$(mktemp -d)"
+printf '%s\n' '{"agentId":7,"agentName":"ci-box","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' \
+  > "$LEGACY_BOX/.runner"
+: > "$LEGACY_BOX/config.sh"
+: > "$LEGACY_BOX/svc.sh"
+mkdir -p "$LEGACY_BOX/bin" "$LEGACY_BOX/externals" "$LEGACY_BOX/_work"
+printf '%s\n' 'actions.runner.acme-alpha.ci-box.service' > "$LEGACY_BOX/.service"
+
+# MULTI_BOX: two named instances in the new layout, side by side. Both carry
+# .rig-instance, because that marker is what makes an instance rig's: a named
+# directory under the base is `managed` only when rig can prove it put it there
+# (see UNDER_BASE_BOX below), and install writes the marker the moment it
+# claims the directory.
+MULTI_BOX="$(mktemp -d)"
+for n in ci-1 ci-2; do
+  mkdir -p "$MULTI_BOX/$n"
+  printf '%s\n' "{\"agentId\":1,\"agentName\":\"${n}\",\"gitHubUrl\":\"https://github.com/acme/alpha\",\"workFolder\":\"_work\"}" \
+    > "$MULTI_BOX/$n/.runner"
+  : > "$MULTI_BOX/$n/config.sh"
+  printf '%s\n' "$n" > "$MULTI_BOX/$n/.rig-instance"
+  printf '%s\n' "actions.runner.acme-alpha.${n}.service" > "$MULTI_BOX/$n/.service"
+done
+
+# UNDER_BASE_BOX: rig's own named instance beside a HAND-ROLLED one, both under
+# the base. `mine` has the marker; `manual` is a directory someone made and ran
+# config.sh in — which is how boxes get concurrency today. Sitting under the
+# base is not evidence rig created it, and flagging it `managed` on location
+# alone was reported by all three reviewers on round 1 of #174.
+UNDER_BASE_BOX="$(mktemp -d)"
+for n in mine manual; do
+  mkdir -p "$UNDER_BASE_BOX/$n"
+  printf '%s\n' "{\"agentId\":2,\"agentName\":\"${n}\",\"gitHubUrl\":\"https://github.com/acme/alpha\",\"workFolder\":\"_work\"}" \
+    > "$UNDER_BASE_BOX/$n/.runner"
+  : > "$UNDER_BASE_BOX/$n/config.sh"
+done
+printf '%s\n' 'mine' > "$UNDER_BASE_BOX/mine/.rig-instance"
+UNDER_BASE_UNITS="$(printf 'actions.runner.acme-alpha.mine.service\t%s/mine\nactions.runner.acme-alpha.manual.service\t%s/manual\n' \
+  "$UNDER_BASE_BOX" "$UNDER_BASE_BOX")"
+
+# ADOPT_BOX: the legacy layout with the tarball unpacked and NOTHING registered
+# — no .rig-instance, no .runner. Two pre-#166 boxes are in this state: one that
+# ran the documented `remove` then `install` cycle under the old code, and one
+# whose first install had config.sh fail on an expired token.
+# Named `actions-runner` for real, because that literal string IS the finding:
+# it is what runner_base_dir yields on every box, so it is what basename
+# returned and what got registered.
+ADOPT_BOX="$(mktemp -d)/actions-runner"
+mkdir -p "$ADOPT_BOX"
+: > "$ADOPT_BOX/config.sh"
+: > "$ADOPT_BOX/svc.sh"
+mkdir -p "$ADOPT_BOX/bin" "$ADOPT_BOX/externals"
+
+# EMPTY_BOX: the runner user exists, nothing is installed.
+EMPTY_BOX="$(mktemp -d)"
+
+# The systemd scan's output, as runner_merge_instances receives it. Fabricated
+# rather than read from this machine: the harness has no runners and CI has no
+# systemd, and the whole point is what happens when the units DON'T match rig's
+# directories.
+HAND_UNITS="$(printf 'actions.runner.acme-gamma.hand-3.service\t/opt/hand-3\nactions.runner.acme-gamma.hand-4.service\t/opt/hand-4\n')"
+
+# instances <base> [units] — every install found, as `install` sees them
+instances() {
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    printf "%s" "${3:-}" | runner_merge_instances "$2"' _ "$ROOT" "$1" "${2:-}"
+}
+# live <base> [units] — the ones the box actually RUNS, as status/remove/repoint
+# see them. The difference is a deregistered install: `remove` keeps the binary
+# on purpose, so the directory outlives the runner.
+live() {
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    printf "%s" "${3:-}" | runner_merge_instances "$2" | runner_live' _ "$ROOT" "$1" "${2:-}"
+}
+
+# --- discovery: rig's own instances, and everyone else's ----------------------
+check "instances: the legacy layout is one instance, named from its .runner" \
+  0 "ci-box" instances "$LEGACY_BOX"
+check "instances: the legacy layout's own bin/ and _work are not instances" \
+  0 "1" lib runner_count "$(instances "$LEGACY_BOX")"
+check "instances: named siblings are found under the base" \
+  0 "2" lib runner_count "$(instances "$MULTI_BOX")"
+check "instances: an empty box has none" \
+  0 "0" lib runner_count "$(instances "$EMPTY_BOX")"
+# The migration rule, and most of the value even before rig can create them:
+# runners rig did not create must SHOW UP, from the systemd scan, not be
+# omitted because no registry of rig's knows them.
+check "instances: hand-rolled units rig never created are listed too" \
+  0 "4" lib runner_count "$(instances "$MULTI_BOX" "$HAND_UNITS")"
+check "instances: a hand-rolled unit is flagged unmanaged" \
+  0 "unmanaged" lib runner_pick hand-3 "$(instances "$MULTI_BOX" "$HAND_UNITS")"
+check "instances: rig's own are flagged managed" \
+  0 "managed" lib runner_pick ci-1 "$(instances "$MULTI_BOX" "$HAND_UNITS")"
+# Regression: $(cat) strips the trailing newline and `read` drops an
+# unterminated last line — which silently lost the LAST unit, and on a box with
+# one hand-rolled runner that unit is the entire finding.
+check "instances: the last scanned unit is not dropped" \
+  0 "hand-4" lib runner_pick hand-4 "$(instances "$MULTI_BOX" "$HAND_UNITS")"
+check "instances: a unit whose directory systemd cannot report is still listed" \
+  0 "hand-9" lib runner_pick hand-9 \
+  "$(instances "$MULTI_BOX" "$(printf 'actions.runner.acme-gamma.hand-9.service\t\n')")"
+# A box with no runner user at all still answers about the units on it.
+check "instances: no base still reports the units on the box" \
+  0 "unmanaged" lib runner_pick hand-3 "$(instances "" "$HAND_UNITS")"
+
+# --- install: --name creates or converges THAT instance -----------------------
+resolve() { # resolve <base> <name> <name_given> [units]
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    runner_resolve_instance "$2" "$3" "$4" \
+      "$(printf "%s" "${5:-}" | runner_merge_instances "$2")"' \
+    _ "$ROOT" "$1" "$2" "$3" "${4:-}"
+}
+# Criterion: a second install on a box already running an unnamed runner
+# creates a SECOND instance rather than converging the first. Pre-fix this
+# resolved to the same directory, skipped configure, and restarted the one
+# runner the box had.
+check "install: --name on a legacy box resolves to a NEW sibling directory" \
+  0 "${LEGACY_BOX}/ci-1" resolve "$LEGACY_BOX" ci-1 1
+check "install: the sibling is named what was asked for" \
+  0 "ci-1" resolve "$LEGACY_BOX" ci-1 1
+# Criterion: existing single-runner boxes converge untouched — same install
+# dir, so the same unit, so no re-registration and no download.
+check "install: no --name on a legacy box adopts it IN PLACE" \
+  0 "${LEGACY_BOX}	ci-box" resolve "$LEGACY_BOX" "$(hostname)" 0
+# ...and the adoption is by layout, not by luck of the name matching.
+check "install: adoption keeps the legacy name, not the hostname default" \
+  0 "ci-box" resolve "$LEGACY_BOX" some-other-hostname 0
+# Round 1 of #174: adopting a legacy base that holds NEITHER .rig-instance nor
+# .runner used to fall through to basename and register the literal string
+# "actions-runner" — as the config.sh --name argument, the .rig-instance
+# record, the runner's name in the repo's Runners list and the unit name.
+# AC2 says such a box converges on the hostname default.
+check "install: an unregistered legacy base takes the caller's name" \
+  0 "${ADOPT_BOX}	ci-box-42" resolve "$ADOPT_BOX" ci-box-42 0
+# The name field alone, so the assertion is about what gets REGISTERED rather
+# than about the line resolve prints. Exit 1 is the pass: never the literal
+# "actions-runner" the basename fallback used to hand to config.sh.
+resolve_name() { resolve "$1" "$2" "$3" | cut -f2; }
+check "install: ...never the literal 'actions-runner'" 1 "" \
+  test "$(resolve_name "$ADOPT_BOX" ci-box-42 0)" = actions-runner
+# The listing view keeps the basename fallback on purpose — it has to call the
+# row something, and "that box never told anyone a name" is honest there.
+check "install: the LISTING still falls back to the directory name" \
+  0 "actions-runner" lib runner_instance_name "$ADOPT_BOX"
+# Convergence per instance: naming one that exists resolves to ITS directory.
+check "install: --name an existing instance converges that one" \
+  0 "${MULTI_BOX}/ci-2	ci-2" resolve "$MULTI_BOX" ci-2 1
+check "install: --name a new instance on a multi box is a new directory" \
+  0 "${MULTI_BOX}/ci-3	ci-3" resolve "$MULTI_BOX" ci-3 1
+# A fresh box: no legacy layout to adopt, so the hostname default is a
+# directory like any other name.
+check "install: a fresh box puts the default-named instance under the base" \
+  0 "${EMPTY_BOX}/ci-box	ci-box" resolve "$EMPTY_BOX" ci-box 0
+# config.sh --replace would deregister a runner rig did not create. Refusing is
+# the difference between "two runners" and "one runner, silently stolen".
+check "install: refuses a name held by a runner rig did not create" \
+  1 "taken by a runner rig did not create" resolve "$MULTI_BOX" hand-3 1 "$HAND_UNITS"
+check "install: that refusal names the runner it would have deregistered" \
+  1 "/opt/hand-3" resolve "$MULTI_BOX" hand-3 1 "$HAND_UNITS"
+# The legacy layout's own top-level entries are not available as names, with no
+# reserved-word list to drift: an occupied path that is not an install refuses.
+check "install: refuses a name colliding with the tarball's own bin/" \
+  1 "is not a runner install" resolve "$LEGACY_BOX" bin 1
+check "install: refuses a name colliding with externals/" \
+  1 "is not a runner install" resolve "$LEGACY_BOX" externals 1
+
+# --- the selector: remove and repoint will not guess --------------------------
+select_one() { # select_one <base> <name> [units]
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    runner_select_instance "$2" \
+      "$(printf "%s" "${4:-}" | runner_merge_instances "$3")" "  try --name"' \
+    _ "$ROOT" "$2" "$1" "${3:-}"
+}
+
+# --- managed means rig put it there, not "it sits under the base" -------------
+# Round 1 of #174, all three reviewers: a hand-made <base>/manual holding
+# config.sh and a .runner came out `managed live`, because the directory walk
+# flagged everything under the base. AC3's word for a runner rig did not create
+# is `unmanaged`, and `status` printing `managed` over one is the same class of
+# untruth as `status` printing one runner of four.
+check "managed: a hand-rolled directory UNDER the base is unmanaged" \
+  0 "unmanaged" lib runner_pick manual "$(instances "$UNDER_BASE_BOX" "$UNDER_BASE_UNITS")"
+check "managed: ...and it is still listed, not hidden" \
+  0 "2" lib runner_count "$(instances "$UNDER_BASE_BOX" "$UNDER_BASE_UNITS")"
+check "managed: rig's own named instance beside it keeps its flag" \
+  0 "managed" lib runner_pick mine "$(instances "$UNDER_BASE_BOX" "$UNDER_BASE_UNITS")"
+# The migration: every box installed before instances existed is the legacy
+# layout, none of them has the marker, and demanding one there would flag the
+# whole installed fleet as somebody else's and refuse to converge it.
+check "managed: the LEGACY base stays managed with no marker" \
+  0 "managed" lib runner_pick ci-box "$(instances "$LEGACY_BOX")"
+check "managed: an unregistered legacy base is managed too" \
+  0 "managed" lib runner_instance_flag "$ADOPT_BOX" "$ADOPT_BOX"
+# The flag is load-bearing, not cosmetic: resolve_instance refuses to register
+# over an unmanaged instance, and that refusal was correct all along — it was
+# simply never reached for a hand-rolled directory under the base.
+check "managed: install refuses to register over the hand-rolled one" \
+  1 "taken by a runner rig did not create" \
+  resolve "$UNDER_BASE_BOX" manual 1 "$UNDER_BASE_UNITS"
+check "managed: ...and still converges its own" \
+  0 "${UNDER_BASE_BOX}/mine	mine" resolve "$UNDER_BASE_BOX" mine 1 "$UNDER_BASE_UNITS"
+
+# Round 4 of #174, @codex-bot-andresmgsl: the OTHER half of the same rule. The
+# walk covers the selected --user's base; every unit whose directory lies
+# outside it falls to the scan branch, which read the name off .runner and then
+# hard-coded the ownership column `unmanaged`. A ci-box separating two repos'
+# runners with --user has rig's own instances out there, and the all-box view
+# — the one `status` with no arguments exists to print — called every one of
+# them somebody else's.
+#
+# CROSS_BOX is the second service user's base, holding rig's `custom-1` (the
+# marker) beside a hand-rolled `theirs` (nothing of rig's). The selected base
+# is MULTI_BOX, so neither is reachable by the walk: both arrive by unit.
+CROSS_BOX="$(mktemp -d)/actions-runner"
+mkdir -p "$CROSS_BOX/custom-1" "$CROSS_BOX/theirs"
+for n in custom-1 theirs; do
+  printf '%s\n' "{\"agentId\":5,\"agentName\":\"${n}\",\"gitHubUrl\":\"https://github.com/acme/widgets\",\"workFolder\":\"_work\"}" \
+    > "$CROSS_BOX/$n/.runner"
+  : > "$CROSS_BOX/$n/config.sh"
+done
+printf '%s\n' 'custom-1' > "$CROSS_BOX/custom-1/.rig-instance"
+# ...and PRE166_BOX is a third user's box rig installed BEFORE #166: the legacy
+# shape, labels recorded, no marker — the marker did not exist yet. Under its
+# own --user the base exemption covers it; from here only the artefact can.
+PRE166_BOX="$(mktemp -d)/actions-runner"
+mkdir -p "$PRE166_BOX"
+printf '%s\n' '{"agentId":6,"agentName":"deploy-1","gitHubUrl":"https://github.com/acme/widgets","workFolder":"_work"}' \
+  > "$PRE166_BOX/.runner"
+printf '%s\n' 'self-hosted,linux' > "$PRE166_BOX/.rig-labels"
+CROSS_UNITS="$(printf 'actions.runner.acme-widgets.custom-1.service\t%s/custom-1\nactions.runner.acme-widgets.theirs.service\t%s/theirs\nactions.runner.acme-widgets.deploy-1.service\t%s\n' \
+  "$CROSS_BOX" "$CROSS_BOX" "$PRE166_BOX")"
+
+# The row @codex-bot-andresmgsl printed, asserted as the row: the tabs are the
+# assertion, because "managed" is a substring of "unmanaged" and the flag is
+# one field of five.
+check "cross-user: rig's own instance outside the base is managed" \
+  0 "	managed	live" lib runner_pick custom-1 "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+check "cross-user: ...and the hand-rolled one beside it is still unmanaged" \
+  0 "	unmanaged	live" lib runner_pick theirs "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+check "cross-user: a pre-#166 install elsewhere is managed by its labels" \
+  0 "	managed	live" lib runner_pick deploy-1 "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+check "cross-user: ...and rig's own under the selected base is unaffected" \
+  0 "	managed	live" lib runner_pick ci-1 "$(instances "$MULTI_BOX" "$CROSS_UNITS")"
+# No readable directory is no evidence, and `unmanaged` is what no evidence
+# looks like — the flag must not become a guess in the other direction.
+check "cross-user: a unit whose directory rig cannot read stays unmanaged" \
+  0 "	unmanaged	live" lib runner_pick hand-9 \
+  "$(instances "$MULTI_BOX" "$(printf 'actions.runner.acme-gamma.hand-9.service\t\n')")"
+check "cross-user: an install with no rig artefact at all stays unmanaged" \
+  0 "unmanaged" lib runner_instance_flag "" "$CROSS_BOX/theirs"
+
+# Reach is not ownership. A truthful `managed` on an instance under another
+# service user must NOT become permission to build over it: install chowns
+# BASE_DIR and RUNNER_DIR to its own --user, so converging one from here would
+# re-own that user's runner tree. Refused, naming the user that owns it.
+check "cross-user: install refuses an instance outside this base" \
+  1 "outside ${MULTI_BOX}" resolve "$MULTI_BOX" custom-1 1 "$CROSS_UNITS"
+check "cross-user: ...and names the --user that reaches it" \
+  1 "--user $(id -un)" resolve "$MULTI_BOX" custom-1 1 "$CROSS_UNITS"
+check "cross-user: ...the hand-rolled one is refused as unmanaged, not as reach" \
+  1 "taken by a runner rig did not create" resolve "$MULTI_BOX" theirs 1 "$CROSS_UNITS"
+check "cross-user: ...and an instance in this base still resolves to it" \
+  0 "${MULTI_BOX}/ci-1	ci-1" resolve "$MULTI_BOX" ci-1 1 "$CROSS_UNITS"
+# The layout is one level deep: the base itself and its direct children.
+check "reach: the legacy base itself is in reach" \
+  0 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner
+check "reach: a named sibling is in reach" \
+  0 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner/ci-1
+check "reach: another user's base is not" \
+  1 "" lib runner_dir_in_base /srv/actions-runner /home/other/actions-runner/ci-1
+check "reach: a path deeper than the layout is not" \
+  1 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner/ci-1/_work
+check "reach: a sibling with the base as a name PREFIX is not" \
+  1 "" lib runner_dir_in_base /srv/actions-runner /srv/actions-runner-2/ci-1
+check "reach: no base reaches nothing" \
+  1 "" lib runner_dir_in_base "" /srv/actions-runner/ci-1
+check "reach: an unknown directory is not in reach" \
+  1 "" lib runner_dir_in_base /srv/actions-runner ""
+
+# Round 2 of #174, non-blocking: the refusal above is by NAME, and there is a
+# second door. A hand-rolled <base>/theirs registered as `other` is correctly
+# refused as --name other — but --name theirs matched no instance, fell through
+# to the new-instance branch, found a directory that IS an install, and rig
+# wrote its marker into a directory it did not create. Nothing was
+# deregistered (assert_runner_repo catches a different repo first); what was
+# wrong is rig claiming somebody else's install as its own.
+ADOPT_DIR_BOX="$(mktemp -d)"
+mkdir -p "$ADOPT_DIR_BOX/theirs"
+printf '%s\n' '{"agentId":9,"agentName":"other","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' \
+  > "$ADOPT_DIR_BOX/theirs/.runner"
+: > "$ADOPT_DIR_BOX/theirs/config.sh"
+check "adopt: the name it registered under is refused, as it always was" \
+  1 "taken by a runner rig did not create" resolve "$ADOPT_DIR_BOX" other 1
+check "adopt: its DIRECTORY name is refused too, which used to fall through" \
+  1 "already holds a runner that answers to" resolve "$ADOPT_DIR_BOX" theirs 1
+check "adopt: that refusal says what the directory actually answers to" \
+  1 "'other'" resolve "$ADOPT_DIR_BOX" theirs 1
+# The guard is about occupied directories, not about the box: a free name on
+# the same box still resolves to a new instance.
+check "adopt: a free name on that box is a new instance as before" \
+  0 "${ADOPT_DIR_BOX}/ours	ours" resolve "$ADOPT_DIR_BOX" ours 1
+
+# Round 3 of #174, @claude-bot-andresmgsl: the refusal above asked whether the
+# occupied directory carried a `.rig-instance`, and the question is whether it
+# answers to THIS name. `repoint --rename`, new in this PR, is the producer of
+# the state the marker test misses: a rename moves the identity and leaves the
+# directory where it is, so <base>/old carries rig's OWN marker reading `fresh`
+# and the directory name `old` resolves to nothing. `--name old` then found a
+# readable marker, walked in, rewrote a live runner's identity record, skipped
+# configure — GitHub still knowing it as `fresh` — and reported a runner
+# "installed and running" that it had not created. Same class as the
+# hand-rolled case, reached through this PR's own door.
+RENAMED_BOX="$(mktemp -d)"
+mkdir -p "$RENAMED_BOX/old"
+printf '%s\n' '{"agentId":9,"agentName":"fresh","gitHubUrl":"https://github.com/acme/new","workFolder":"_work"}' \
+  > "$RENAMED_BOX/old/.runner"
+: > "$RENAMED_BOX/old/config.sh"
+printf '%s\n' 'fresh' > "$RENAMED_BOX/old/.rig-instance"
+check "rename: the directory's old name is refused, marker or no marker" \
+  1 "already holds a runner that answers to" resolve "$RENAMED_BOX" old 1
+check "rename: ...and the refusal names what it answers to now" \
+  1 "'fresh'" resolve "$RENAMED_BOX" old 1
+# ...while the name the box and GitHub both know still converges that instance,
+# in the directory it never left: the guard must not refuse the runner to
+# itself.
+check "rename: the name it answers to converges its own directory" \
+  0 "${RENAMED_BOX}/old	fresh" resolve "$RENAMED_BOX" fresh 1
+check "rename: and a free name beside it is still a new instance" \
+  0 "${RENAMED_BOX}/second	second" resolve "$RENAMED_BOX" second 1
+
+# --- one instance, one line ---------------------------------------------------
+# Round 1 of #174, non-blocking: the merge deduped on the directory alone, so a
+# unit whose WorkingDirectory differs from the walk's path by a single
+# character — a symlinked home, a trailing slash — emitted that instance TWICE,
+# once managed from the walk and once unmanaged from the scan. status
+# double-counted it and both selectors then refused it as ambiguous.
+DEDUP_UNITS="$(printf 'actions.runner.acme-alpha.ci-1.service\t%s/ci-1/\nactions.runner.acme-alpha.ci-2.service\t%s/ci-2\n' \
+  "$MULTI_BOX" "$MULTI_BOX")"
+check "dedup: a unit reported under a differing path is not a second instance" \
+  0 "2" lib runner_count "$(instances "$MULTI_BOX" "$DEDUP_UNITS")"
+check "dedup: ...and the survivor is the managed one" \
+  0 "managed" lib runner_pick ci-1 "$(instances "$MULTI_BOX" "$DEDUP_UNITS")"
+check "dedup: ...so the selector still resolves that name" \
+  0 "${MULTI_BOX}/ci-1" select_one "$MULTI_BOX" ci-1 "$DEDUP_UNITS"
+# One runner on the box: --name stays optional, exactly as before.
+check "select: one runner and no --name picks it" \
+  0 "ci-box" select_one "$LEGACY_BOX" ""
+# Criterion, and the reported bug: removing "the runner" on a box running
+# several took one, exited 0, and left the rest running.
+check "select: several runners and no --name refuses" \
+  1 "say which one" select_one "$MULTI_BOX" ""
+check "select: the refusal names the candidates" \
+  1 "ci-2" select_one "$MULTI_BOX" ""
+check "select: the refusal counts them" \
+  1 "this box runs 2 runners" select_one "$MULTI_BOX" ""
+# The count includes the ones rig did not create — those are the three siblings
+# the old `remove` never mentioned.
+check "select: hand-rolled siblings count toward the ambiguity" \
+  1 "this box runs 4 runners" select_one "$MULTI_BOX" "" "$HAND_UNITS"
+check "select: --name picks one out of several" \
+  0 "${MULTI_BOX}/ci-1" select_one "$MULTI_BOX" ci-1
+# ...including a hand-rolled one: rig can select what it did not create.
+check "select: --name reaches an unmanaged sibling" \
+  0 "/opt/hand-4" select_one "$MULTI_BOX" hand-4 "$HAND_UNITS"
+check "select: a name that is on no runner refuses with the list" \
+  1 "no runner named 'nope'" select_one "$MULTI_BOX" nope
+check "select: that refusal lists what the box does run" \
+  1 "ci-1" select_one "$MULTI_BOX" nope
+
+# --- the instance name outlives the registration -------------------------------
+# remove deletes .runner and keeps the binary, so without .rig-instance an
+# instance would lose its identity at exactly the moment `install` needs it to
+# find this directory instead of building a sibling beside it.
+NAMED_BOX="$(mktemp -d)"
+mkdir -p "$NAMED_BOX/ci-1"
+: > "$NAMED_BOX/ci-1/config.sh"
+printf '%s\n' 'ci-1' > "$NAMED_BOX/ci-1/.rig-instance"
+check "name: a deregistered instance keeps its name" \
+  0 "ci-1" lib runner_instance_name "$NAMED_BOX/ci-1"
+check "name: install resolves that name back to the same directory" \
+  0 "${NAMED_BOX}/ci-1	ci-1" resolve "$NAMED_BOX" ci-1 1
+check "name: .rig-instance outranks a stale .runner" \
+  0 "ci-1" lib runner_instance_name "$NAMED_BOX/ci-1"
+# ...and that directory is an INSTALL, not a runner. `status` must go on
+# exiting 1 after a remove — the drill asserts exactly that ("runner status
+# confirms: nothing registered"), and `remove` must go on saying there is
+# nothing to remove. Only `install` may see it, which is how the binary gets
+# re-used instead of re-downloaded.
+check "dormant: install still finds a deregistered install" \
+  0 "1" lib runner_count "$(instances "$NAMED_BOX")"
+check "dormant: it is flagged dormant, not live" \
+  0 "dormant" lib runner_pick ci-1 "$(instances "$NAMED_BOX")"
+check "dormant: status and remove see no runner there" \
+  0 "0" lib runner_count "$(live "$NAMED_BOX")"
+# A registered instance is live; so is one with a unit and no registration yet.
+check "live: a registered instance is live" \
+  0 "live" lib runner_pick ci-1 "$(live "$MULTI_BOX")"
+check "live: a hand-rolled unit is live whatever rig can read" \
+  0 "live" lib runner_pick hand-3 "$(live "$MULTI_BOX" "$HAND_UNITS")"
+# The three "what does this box run" commands filter; install does not.
+for c in status remove repoint; do
+  check "runner $c: asks what the box RUNS, not what is installed on it" 0 "" \
+    grep -q 'runner_live' "$ROOT/commands/runner-$c.sh"
+done
+check "runner install: does NOT filter — it must re-use a dormant install" 1 "" \
+  grep -q 'runner_live' "$ROOT/commands/runner-install.sh"
+# remove is where that record is written, and it must be written BEFORE
+# anything is torn down: a failed deregistration must not be what loses it.
+# --- remove, executed: a fake systemd, not a grep on the source ---------------
+# Round 1 of #174 asked for the failure cases to be proven by EXECUTION rather
+# than by another source grep, and rightly: the bug was a path that PRINTED
+# `systemctl disable --now <unit>` for the operator, never ran it, and returned
+# 0 — and a grep for "systemctl disable" in the source calls that present.
+#
+# runner-remove.sh wants root and a real systemd. Both are stubs here. `id`
+# answers the root check, and `systemctl` IS this box's systemd: it serves the
+# unit scan, records every call it receives, and fails on demand.
+STUBS="$(mktemp -d)"
+cat > "$STUBS/id" <<'STUB'
+#!/usr/bin/env bash
+# `id -u` with no operand is the root check. With one, it asks whether the
+# runner user exists — and unless the fixture says otherwise it does not, which
+# is the case where rig installed nothing and the scan is the only thing that
+# can say what the box runs.
+[ "$#" -eq 1 ] && [ "$1" = "-u" ] && { echo 0; exit 0; }
+[ -n "${FAKE_HOME:-}" ] && { echo 4242; exit 0; }
+exit 1
+STUB
+cat > "$STUBS/systemctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+case "$1" in
+  list-units|list-unit-files) cat "$SYSTEMCTL_UNITS" ;;
+  # Unset, the shape the round 1 finding turns on: systemd knows the unit and
+  # cannot report a WorkingDirectory for it. Set, a "unit<TAB>dir" table — a
+  # box whose runners do NOT all live under the selected user's base, which is
+  # the only way to reach the cross-user paths from the CLI (#174 round 4).
+  show)
+    if [ -n "${SYSTEMCTL_WORKDIRS:-}" ] && [ -r "${SYSTEMCTL_WORKDIRS}" ]; then
+      awk -F'\t' -v u="${*: -1}" '$1 == u { print $2; f = 1 } END { if (!f) print "" }' \
+        "$SYSTEMCTL_WORKDIRS"
+    else
+      printf '\n'
+    fi ;;
+  disable) [ -z "${SYSTEMCTL_FAIL:-}" ] || exit 1 ;;
+esac
+exit 0
+STUB
+cat > "$STUBS/getent" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = passwd ] && [ -n "${FAKE_HOME:-}" ] && [ "$2" = github-runner ]; then
+  printf '%s:x:4242:4242::%s:/bin/bash\n' "$2" "$FAKE_HOME"; exit 0
+fi
+exec /usr/bin/getent "$@"
+STUB
+cat > "$STUBS/runuser" <<'STUB'
+#!/usr/bin/env bash
+# runuser -u <user> -- <cmd...>; the test harness is not root, and which user
+# config.sh runs as is not what these assertions are about.
+shift 2; [ "${1:-}" = "--" ] && shift
+exec "$@"
+STUB
+chmod +x "$STUBS"/id "$STUBS"/systemctl "$STUBS"/getent "$STUBS"/runuser
+
+# remove_run <units> <fail?> <args...> — runner-remove.sh against that fake box.
+SYSTEMCTL_LOG="$(mktemp)"
+remove_run() {
+  local units="$1" fail="$2"; shift 2
+  : > "$SYSTEMCTL_LOG"
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$units" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="$fail" FAKE_HOME="${FAKE_HOME:-}" \
+    "$ROOT/commands/runner-remove.sh" "$@"
+}
+logged() { grep -qF -e "$1" "$SYSTEMCTL_LOG"; }
+
+# One discovered unit whose directory systemd cannot report. rig cannot
+# deregister it — config.sh lives in that directory — but it knows the unit,
+# and a runner it cannot deregister is still a runner taking jobs.
+GHOST_UNITS="$(mktemp)"
+printf '%s\n' 'actions.runner.acme-gamma.ghost.service loaded active running ghost' > "$GHOST_UNITS"
+check "remove --all: an undeprovisionable runner is NOT reported removed" \
+  1 "did not come down completely" remove_run "$GHOST_UNITS" "" --all
+check "remove --all: ...and its service was actually disabled, not printed" \
+  0 "" logged "disable --now actions.runner.acme-gamma.ghost.service"
+check "remove --all: ...and the operator is told it is still registered" \
+  1 "still registered" remove_run "$GHOST_UNITS" "" --all
+# When even the disable fails, the by-hand instruction is the fallback — but
+# the exit status still refuses to call it done.
+check "remove --all: a disable that fails is not a success either" \
+  1 "stop it by hand" remove_run "$GHOST_UNITS" 1 --all
+
+# Two of them: the loop must reach the SECOND after the first comes back
+# incomplete. Pre-fix, a failing target killed the run under `set -e` with the
+# rest of the box untouched — the teardown landing mid-list.
+TWO_GHOSTS="$(mktemp)"
+printf '%s\n%s\n' \
+  'actions.runner.acme-gamma.ghost-a.service loaded active running a' \
+  'actions.runner.acme-gamma.ghost-b.service loaded active running b' > "$TWO_GHOSTS"
+check "remove --all: keeps going after a target it could not finish" \
+  1 "ghost-b" remove_run "$TWO_GHOSTS" "" --all
+check "remove --all: ...the first one's service came down" \
+  0 "" logged "disable --now actions.runner.acme-gamma.ghost-a.service"
+check "remove --all: ...and so did the second's" \
+  0 "" logged "disable --now actions.runner.acme-gamma.ghost-b.service"
+
+# The whole path, on a box whose directory rig CAN read: the service comes
+# down through svc.sh, config.sh deregisters, and the exit is a real success.
+NO_UNITS="$(mktemp)"
+SVC_LOG="$(mktemp)"
+# Sets FAKE_HOME and BOX as globals rather than printing the path: called in a
+# $( ) it would build the box inside a subshell and lose FAKE_HOME with it.
+FAKE_HOME=""
+BOX=""
+mkbox() { # mkbox — a legacy box with stub svc.sh/config.sh, fresh each time
+  FAKE_HOME="$(mktemp -d)"
+  local d="$FAKE_HOME/actions-runner"
+  mkdir -p "$d"
+  printf '%s\n' '{"agentId":7,"agentName":"ci-box","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' > "$d/.runner"
+  printf '%s\n' 'actions.runner.acme-alpha.ci-box.service' > "$d/.service"
+  printf '%s\n' 'self-hosted,linux' > "$d/.rig-labels"
+  # Records whether .rig-instance was on disk WHEN the service came down. That
+  # ordering used to be asserted by comparing two grep -n line numbers in the
+  # source, which broke the moment the teardown moved into a helper — and would
+  # not have caught the ordering actually inverting inside one function.
+  cat > "$d/svc.sh" <<'SVC'
+#!/usr/bin/env bash
+if [ -r ./.rig-instance ]; then m=present; else m=absent; fi
+printf '%s %s\n' "$1" "$m" >> "$SVC_LOG"
+SVC
+  cat > "$d/config.sh" <<'CFG'
+#!/usr/bin/env bash
+[ -z "${CONFIG_FAIL:-}" ] || exit 1
+rm -f ./.runner
+CFG
+  chmod +x "$d/svc.sh" "$d/config.sh"
+  BOX="$d"
+}
+# remove_local [VAR=VAL...] — runner-remove.sh --local against the fixture box
+remove_local() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" "$@" \
+    "$ROOT/commands/runner-remove.sh" --local
+}
+mkbox; : > "$SVC_LOG"
+check "remove --local: a box rig can read comes down clean, exit 0" \
+  0 "removed" remove_local
+check "remove: the name was on disk BEFORE the service came down" \
+  0 "" grep -qx 'stop present' "$SVC_LOG"
+check "remove: ...and the service was uninstalled too" \
+  0 "" grep -qx 'uninstall present' "$SVC_LOG"
+check "remove: the name outlives the registration it removed" \
+  0 "ci-box" cat "$BOX/.rig-instance"
+check "remove: the registration is gone" 1 "" test -e "$BOX/.runner"
+check "remove: the recorded labels went with it" 1 "" test -e "$BOX/.rig-labels"
+
+# A deregistration that fails is reported and survived, not silently succeeded.
+mkbox; : > "$SVC_LOG"
+check "remove: a failed deregistration is not a success" \
+  1 "did not come down completely" remove_local CONFIG_FAIL=1
+check "remove: ...and the labels are kept, matching the registration left behind" \
+  0 "" test -e "$BOX/.rig-labels"
+FAKE_HOME=""
+
+# A box WITH systemd and no actions.runner.* unit at all — the ordinary empty
+# box, and the one the help promises exits 0. The scan's grep matches nothing
+# and exits 1, which under the callers' pipefail took the whole pipeline down
+# and killed the command silently: exit 1, no output, on the "nothing installed
+# here" path. Invisible to a review box and to CI, both of which have no
+# systemd and return before the grep — it took the fake systemd above to see.
+check "remove: a box with systemd and no runner units converges, exit 0" \
+  0 "nothing to remove" remove_run "$NO_UNITS" "" --all
+check "remove: ...and it says so rather than dying silently" \
+  0 "no actions.runner.* unit" remove_run "$NO_UNITS" "" --all
+check "status: the same empty box does not die silently either" \
+  1 "" env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" \
+  SYSTEMCTL_LOG="$SYSTEMCTL_LOG" "$ROOT/commands/runner-status.sh"
+
+# --- repoint --rename, executed: refused BEFORE the runner comes down ---------
+# Round 2 of #174, all three reviewers. --rename was validated for syntax only,
+# so a rename onto a name the box already used was discovered by the resolver
+# AFTER the teardown: stop, uninstall, deregister, rewrite .rig-instance, and
+# only then the refusal. That left the runner registered nowhere and reachable
+# by neither name — the marker rewrite survives the failure, so the old name no
+# longer finds the directory and the new one is ambiguous — with the recovery
+# command the failure printed hitting the same wall.
+#
+# Executed, not grepped, and for the reason round 1 established: the assertion
+# that matters is that NOTHING RAN, and no grep on the source can say that. The
+# stub svc.sh/config.sh record every call, so an empty log is the evidence.
+cat > "$STUBS/chown" <<'STUB'
+#!/usr/bin/env bash
+# The harness is not root. Which user owns a fixture file is not what anything
+# below asserts on — every one of them reads content back.
+exit 0
+STUB
+chmod +x "$STUBS/chown"
+
+BASE=""
+mkinstance() { # mkinstance <base> <name> registered|dormant
+  local d="$1/$2"
+  mkdir -p "$d/bin"
+  # Present so `install` skips the download: this box has no network, and the
+  # binary being re-used rather than re-fetched is the point of a move.
+  : > "$d/bin/Runner.Listener"
+  printf '%s\n' "$2" > "$d/.rig-instance"
+  printf '%s\n' 'self-hosted,linux' > "$d/.rig-labels"
+  if [ "$3" = registered ]; then
+    printf '%s\n' "{\"agentId\":7,\"agentName\":\"${2}\",\"gitHubUrl\":\"https://github.com/acme/alpha\",\"workFolder\":\"_work\"}" \
+      > "$d/.runner"
+    # A registered instance has a service; a dormant one must NOT, or the unit
+    # alone would make it live and the dormant-collision case would not exist.
+    printf 'actions.runner.acme-alpha.%s.service\n' "$2" > "$d/.service"
+  fi
+  cat > "$d/svc.sh" <<'SVC'
+#!/usr/bin/env bash
+printf 'svc %s %s\n' "$1" "${PWD##*/}" >> "$SVC_LOG"
+SVC
+  # Both halves of the lifecycle, because a move runs both: `remove` wipes the
+  # registration, a register writes one naming the repo it was given.
+  cat > "$d/config.sh" <<'CFG'
+#!/usr/bin/env bash
+printf 'config %s %s\n' "$1" "${PWD##*/}" >> "$SVC_LOG"
+if [ "$1" = remove ]; then rm -f ./.runner; exit 0; fi
+url=""; name=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --url)  url="$2";  shift 2 ;;
+    --name) name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '{"agentId":7,"agentName":"%s","gitHubUrl":"%s","workFolder":"_work"}\n' \
+  "$name" "$url" > ./.runner
+CFG
+  chmod +x "$d/svc.sh" "$d/config.sh"
+}
+mkmulti() { # mkmulti <state of the sibling> — a box running `old` beside `taken`
+  FAKE_HOME="$(mktemp -d)"
+  BASE="$FAKE_HOME/actions-runner"
+  mkdir -p "$BASE"
+  mkinstance "$BASE" old registered
+  mkinstance "$BASE" taken "$1"
+  : > "$SVC_LOG"
+}
+# Tokens in the environment on purpose: with them present the ONLY thing that
+# can stop the teardown is the guard under test. Without them the command would
+# refuse for the wrong reason and the test would pass on a broken tree.
+repoint_run() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    RUNNER_REMOVE_TOKEN=removal-token RUNNER_TOKEN=registration-token \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+# ...and the convergence case runs with NO tokens and no tty, so a teardown it
+# should not have started dies naming the variable instead of prompting.
+repoint_bare() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+
+mkmulti registered
+check "repoint --rename: a name a live sibling holds is refused" \
+  1 "already belongs to a runner on this box" \
+  repoint_run --repo acme/new --name old --rename taken
+check "repoint --rename: ...the refusal names the sibling it would collide with" \
+  1 "${BASE}/taken" repoint_run --repo acme/new --name old --rename taken
+check "repoint --rename: ...and nothing was stopped, uninstalled or deregistered" \
+  1 "" test -s "$SVC_LOG"
+check "repoint --rename: ...the runner is still registered where it was" \
+  0 "acme/alpha" cat "$BASE/old/.runner"
+check "repoint --rename: ...and still answers to its own name" \
+  0 "old" cat "$BASE/old/.rig-instance"
+
+# A directory an earlier `remove` left behind holds the name just as firmly —
+# its .rig-instance is what the install at the far end resolves against — and
+# `status` filters it out, so nothing on the box warns you first.
+mkmulti dormant
+check "repoint --rename: a name a DORMANT sibling holds is refused too" \
+  1 "already belongs to a runner on this box" \
+  repoint_run --repo acme/new --name old --rename taken
+check "repoint --rename: ...and that one is not stopped either" \
+  1 "" test -s "$SVC_LOG"
+
+# The other half of the same gap: --rename asking for the name the instance
+# already has is not a change, and the help promises it converges. The test was
+# whether the FLAG was passed, so it took the full teardown to re-register the
+# runner as itself.
+mkmulti registered
+check "repoint --rename to the name it already has: converges, exit 0" \
+  0 "nothing to do" repoint_bare --repo acme/alpha --name old --rename old
+check "repoint --rename: ...without asking for a token or touching the service" \
+  1 "" test -s "$SVC_LOG"
+
+# ...and the guard must not refuse everything: a rename to a free name still
+# moves the runner, in place, re-using the binary.
+mkmulti registered
+check "repoint --rename to a free name still moves the runner" \
+  0 "repointed to https://github.com/acme/new" \
+  repoint_run --repo acme/new --name old --rename fresh --local
+check "repoint --rename: ...the service came down in the instance's own directory" \
+  0 "" grep -qx 'svc stop old' "$SVC_LOG"
+check "repoint --rename: ...and came back up there, nothing re-downloaded" \
+  0 "" grep -qx 'svc start old' "$SVC_LOG"
+check "repoint --rename: ...it answers to the new name now" \
+  0 "fresh" cat "$BASE/old/.rig-instance"
+check "repoint --rename: ...and is registered to the new repo under it" \
+  0 "acme/new" cat "$BASE/old/.runner"
+check "repoint --rename: ...as the new name, not the old one" \
+  0 "\"agentName\":\"fresh\"" cat "$BASE/old/.runner"
+
+# Round 3 of #174, on the box the rename above just produced — executed, not
+# grepped, and against the state rig itself reached rather than one hand-built
+# for the assertion. `--name old` names a directory that answers to `fresh`:
+# pre-fix rig walked in, rewrote the marker, skipped configure and exited 0
+# "installed and running", having created no second runner and left the name
+# GitHub knows resolving to nothing.
+install_run() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    RUNNER_TOKEN=registration-token \
+    "$ROOT/commands/runner-install.sh" "$@" </dev/null
+}
+: > "$SVC_LOG"
+check "install after a rename: the old directory name is refused" \
+  1 "already holds a runner that answers to" \
+  install_run --repo acme/new --name old
+check "install after a rename: ...naming the runner it would have adopted" \
+  1 "'fresh'" install_run --repo acme/new --name old
+check "install after a rename: ...the identity record is NOT rewritten" \
+  0 "fresh" cat "$BASE/old/.rig-instance"
+check "install after a rename: ...the registration is untouched" \
+  0 "\"agentName\":\"fresh\"" cat "$BASE/old/.runner"
+check "install after a rename: ...and nothing was configured or started" \
+  1 "" test -s "$SVC_LOG"
+check "install after a rename: ...no sibling was created either" \
+  1 "" test -e "$BASE/old/old"
+# The route that must keep working, on the same box: the name it does answer to
+# converges the instance in place, re-using the binary and asking for nothing.
+check "install after a rename: the name it answers to still converges it" \
+  0 "already registered" install_run --repo acme/new --name fresh
+check "install after a rename: ...in the directory the rename left it in" \
+  0 "" grep -qx 'svc start old' "$SVC_LOG"
+FAKE_HOME=""
+
+# Round 4 of #174, @codex-bot-andresmgsl, executed end to end: a box running a
+# rig instance under a SECOND service user. The listing must call it `managed`,
+# because rig created it — and repoint must still refuse to move it, because
+# the install at the far end runs as the --user given here and chowns the
+# instance directory to it. Fixing the flag without splitting reach from
+# ownership would have walked this straight into a teardown and a chown of
+# another user's tree; the constant was accidentally the only thing stopping
+# it. Driven for real against the stub systemd, so "nothing ran" is an empty
+# call log rather than a source grep.
+FAKE_HOME="$(mktemp -d)"
+mkdir -p "$FAKE_HOME/actions-runner"
+mkinstance "$FAKE_HOME/actions-runner" mine registered
+OTHER_HOME="$(mktemp -d)"
+mkdir -p "$OTHER_HOME/actions-runner"
+mkinstance "$OTHER_HOME/actions-runner" custom-1 registered
+CROSS_SCAN="$(mktemp)"
+printf '%s\n' 'actions.runner.acme-alpha.custom-1.service loaded active running custom-1' \
+  > "$CROSS_SCAN"
+CROSS_WORKDIRS="$(mktemp)"
+printf 'actions.runner.acme-alpha.custom-1.service\t%s/actions-runner/custom-1\n' \
+  "$OTHER_HOME" > "$CROSS_WORKDIRS"
+repoint_cross() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$CROSS_SCAN" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_WORKDIRS="$CROSS_WORKDIRS" SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" \
+    SVC_LOG="$SVC_LOG" RUNNER_REMOVE_TOKEN=removal-token RUNNER_TOKEN=registration-token \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+status_cross() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$CROSS_SCAN" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_WORKDIRS="$CROSS_WORKDIRS" FAKE_HOME="$FAKE_HOME" \
+    "$ROOT/commands/runner-status.sh" "$@" </dev/null
+}
+: > "$SVC_LOG"
+check "cross-user: status calls the other user's rig instance managed" \
+  0 "managed: managed" status_cross --name custom-1
+CROSS_OUT="$(mktemp)"
+status_cross --name custom-1 > "$CROSS_OUT" 2>&1
+check "cross-user: ...and does not warn that rig did not create it" \
+  1 "" grep -q "registered here by hand" "$CROSS_OUT"
+check "cross-user: repoint refuses to move it as this user" \
+  1 "outside ${FAKE_HOME}/actions-runner" \
+  repoint_cross --repo acme/new --name custom-1
+check "cross-user: ...naming the --user that owns it" \
+  1 "--user $(id -un)" repoint_cross --repo acme/new --name custom-1
+check "cross-user: ...and NOTHING was stopped, deregistered or re-registered" \
+  1 "" test -s "$SVC_LOG"
+check "cross-user: ...the registration is untouched" \
+  0 "acme/alpha" cat "$OTHER_HOME/actions-runner/custom-1/.runner"
+check "cross-user: ...and it still answers to its own name" \
+  0 "custom-1" cat "$OTHER_HOME/actions-runner/custom-1/.rig-instance"
+# The verb still works on this box, on the instance it can reach: the refusal
+# is about which base the runner lives in, not about there being two.
+check "cross-user: repoint still moves the instance under this user's base" \
+  0 "repointed to https://github.com/acme/new" \
+  repoint_cross --repo acme/new --name mine --local
+check "cross-user: ...in place, re-using the binary" \
+  0 "" grep -qx 'svc start mine' "$SVC_LOG"
+FAKE_HOME=""
+
+# --- names as path components --------------------------------------------------
+check "name: an ordinary name is valid"     0 "" lib runner_valid_name ci-1
+check "name: a dotted hostname is valid"    0 "" lib runner_valid_name box.example.com
+check "name: a slash is not"                1 "" lib runner_valid_name ci/1
+check "name: .. is not"                     1 "" lib runner_valid_name ..
+check "name: a leading dot is not"          1 "" lib runner_valid_name .hidden
+check "name: empty is not"                  1 "" lib runner_valid_name ""
+# The last-resort reader, for a unit whose directory rig cannot read at all.
+check "unit name: read out of the unit name" \
+  0 "ci-7" lib runner_unit_name actions.runner.acme-alpha.ci-7.service
+
+rm -rf "$LEGACY_BOX" "$MULTI_BOX" "$EMPTY_BOX" "$NAMED_BOX"
+
+# --- the four verbs stayed instance-aware ------------------------------------
+# Greps, because the paths that would prove it need root and a real
+# registration. A selector deleted from any of these is a command that quietly
+# goes back to acting on whichever runner it finds first.
+check "runner remove: selects rather than guessing" 0 "" \
+  grep -q 'runner_select_instance' "$ROOT/commands/runner-remove.sh"
+check "runner repoint: selects rather than guessing" 0 "" \
+  grep -q 'runner_select_instance' "$ROOT/commands/runner-repoint.sh"
+check "runner install: resolves an instance rather than one hardcoded dir" 0 "" \
+  grep -q 'runner_resolve_instance' "$ROOT/commands/runner-install.sh"
+check "runner status: discovers by scanning units" 0 "" \
+  grep -q 'runner_scan_units' "$ROOT/commands/runner-status.sh"
+# repoint re-registers through install, which builds in rig's layout: run on a
+# runner rig did not create it would leave that directory behind and download a
+# fresh one elsewhere — a move that reports success and moves nothing.
+check "runner repoint: refuses a runner rig did not create" 0 "" \
+  grep -q 'was not created by rig' "$ROOT/commands/runner-repoint.sh"
+# The hardcoded per-box path is what the whole change lifts: no runner command
+# may reconstruct it. The base lives in one function now.
+check "runner commands: no hardcoded actions-runner path remains" 1 "" \
+  grep -n 'actions-runner"' "$ROOT/commands/runner-install.sh" \
+    "$ROOT/commands/runner-status.sh" "$ROOT/commands/runner-remove.sh" \
+    "$ROOT/commands/runner-repoint.sh"
+# bootstrap --undo refuses while ANY runner is registered. Its glob knew only
+# the legacy depth, so a box running four named instances would have undone
+# clean and left four ghosts in their repositories.
+check "bootstrap --undo: looks for named instances too" 0 "" \
+  grep -q 'actions-runner/\*/.runner' "$ROOT/commands/bootstrap-undo.sh"
+
+# ---------------------------------------------------------------------------
 # rig platform (#64). Unusually testable for this repo: it needs no root, no
 # network and no fixtures, and it WRITES NOTHING — so unlike every other
 # command here the harness can RUN it for real on the machine running the
