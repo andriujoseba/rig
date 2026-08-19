@@ -122,6 +122,25 @@ resolve_machine_roles() {
   [ -n "$MACHINE_ROLES" ] || MACHINE_ROLES="none"
 }
 
+resolve_machine_roles_for_usage() {
+  local error_file
+  error_file="$(mktemp)"
+  if resolve_machine_roles 2>"$error_file"; then
+    rm -f "$error_file"
+    MACHINE_ROLES_ERROR=""
+    return 0
+  fi
+  MACHINE_ROLES="unavailable"
+  MACHINE_ROLES_ERROR="$(<"$error_file")"
+  rm -f "$error_file"
+  [ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"
+  return 1
+}
+
+print_machine_roles_error() {
+  [ -z "${MACHINE_ROLES_ERROR:-}" ] || printf '%s\n' "$MACHINE_ROLES_ERROR" >&2
+}
+
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 MACHINE_TEMPLATE_DIR=""
@@ -141,11 +160,14 @@ case "$ROLE" in
     # `rig bootstrap <role>` stays the single entrypoint for both families.
     exec "$HERE/bootstrap-tenant.sh" "$@" ;;
   -h|--help)
-    resolve_machine_roles || exit 2
-    usage; exit 0 ;;
+    resolve_machine_roles_for_usage || true
+    usage
+    print_machine_roles_error
+    exit 0 ;;
   "")
-    resolve_machine_roles || exit 2
+    resolve_machine_roles_for_usage || true
     usage >&2
+    print_machine_roles_error
     die "role required (custom; machine roles from $(templates_source_desc): $MACHINE_ROLES; or a '-box' tenant role from the template registry, e.g. claude-box)" 2 ;;
   *)
     shift

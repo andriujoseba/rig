@@ -21,6 +21,14 @@ printf '# dev-server — interactive development fleet machine traits ported fro
 printf '# workstation — joins by interactive login so it remains user-owned and\n# untagged; no pre-auth key is used or stored.\nROOT_DOOR="closed"\nHOST="yes"\nJOIN="login"\n' > "$BOOT_TPL_FIX/workstation/template.env"
 export RIG_TEMPLATES_DIR="$BOOT_TPL_FIX"
 
+BOOT_NO_NET="$(mktemp -d)"
+mkdir -p "$BOOT_NO_NET/bin"
+cat > "$BOOT_NO_NET/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 6
+EOF
+chmod +x "$BOOT_NO_NET/bin/curl"
+
 # check <desc> <want_exit> <want_substr> <cmd...>
 # Runs cmd, asserts exit code and (if non-empty) that combined output
 # contains want_substr.
@@ -41,6 +49,23 @@ check() {
   echo "ok: $desc"; PASS=$((PASS + 1))
 }
 
+# check_before <desc> <want_exit> <first> <second> <cmd...>
+# Proves diagnostics follow the documentation surface instead of replacing it.
+check_before() {
+  local desc="$1" want="$2" first="$3" second="$4"; shift 4
+  local out rc first_line second_line
+  out="$("$@" 2>&1)"; rc=$?
+  first_line="$(printf '%s\n' "$out" | grep -nF -m1 -e "$first" | cut -d: -f1)"
+  second_line="$(printf '%s\n' "$out" | grep -nF -m1 -e "$second" | cut -d: -f1)"
+  if [ "$rc" -ne "$want" ] || [ -z "$first_line" ] || [ -z "$second_line" ] \
+    || [ "$first_line" -ge "$second_line" ]; then
+    echo "FAIL: $desc — wanted exit $want and '$first' before '$second'"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    FAIL=$((FAIL + 1)); return
+  fi
+  echo "ok: $desc"; PASS=$((PASS + 1))
+}
+
 check "no args shows usage, exit 2"      2 "usage:" "$ROOT/bin/rig"
 check "--help exits 0"                   0 "usage:" "$ROOT/bin/rig" --help
 check "help exits 0"                     0 "usage:" "$ROOT/bin/rig" help
@@ -51,6 +76,40 @@ check "bootstrap: role required, exit 2"   2 "role required"  "$ROOT/commands/bo
 check "bootstrap: no-role refusal lists registry machine roles" 2 "workstation" "$ROOT/commands/bootstrap.sh"
 check "bootstrap: no-role refusal lists custom" 2 "custom" "$ROOT/commands/bootstrap.sh"
 check "bootstrap: --help exits 0"          0 "usage:"         "$ROOT/commands/bootstrap.sh" --help
+check "bootstrap: offline --help exits 0 with usage" 0 "usage:" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh" --help
+check "bootstrap: offline --help marks roles unavailable" 0 "unavailable" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh" --help
+check "bootstrap: offline --help keeps the resolver diagnosis" 0 "archive/missing.tar.gz" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh" --help
+check_before "bootstrap: offline --help prints usage before resolver error" 0 \
+  "usage:" "cannot fetch the template registry" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh" --help
+check "bootstrap: offline no-role exits 2 with usage" 2 "usage:" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh"
+check "bootstrap: offline no-role marks roles unavailable" 2 "unavailable" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh"
+check "bootstrap: offline no-role keeps the resolver diagnosis" 2 "archive/missing.tar.gz" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh"
+check_before "bootstrap: offline no-role prints usage before resolver error" 2 \
+  "usage:" "cannot fetch the template registry" \
+  env -u RIG_TEMPLATES_DIR PATH="$BOOT_NO_NET/bin:$PATH" \
+  RIG_TEMPLATES_REPO=heavy-duty/does-not-exist-xyz RIG_TEMPLATES_REF=missing \
+  "$ROOT/commands/bootstrap.sh"
 check "bootstrap: unknown role exits 2"    2 "unknown role"   "$ROOT/commands/bootstrap.sh" potato
 check "bootstrap: unknown flag exits 2"    2 "unknown flag"   "$ROOT/commands/bootstrap.sh" workload-server --nope
 check "bootstrap: hostname needs value"    2 "needs a value"  "$ROOT/commands/bootstrap.sh" workload-server --hostname
@@ -1223,7 +1282,7 @@ check "machine template: install failure names role and source" 0 "" \
 # shellcheck disable=SC2016
 check "machine template: install runs from its definition with RIG_ROLE" 0 "" \
   grep -qF 'cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" bash ./install.sh' "$ROOT/commands/bootstrap.sh"
-rm -rf "$BOOT_TPL_FIX" "$TPL_FIX" "$TPL_WORK"
+rm -rf "$BOOT_TPL_FIX" "$BOOT_NO_NET" "$TPL_FIX" "$TPL_WORK"
 
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
 # idiom): nothing in the tenant mechanism touches the tailnet, prompts, or
