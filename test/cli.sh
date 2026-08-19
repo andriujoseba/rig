@@ -1064,15 +1064,18 @@ check "tenant: refuses a host=yes box (a VM host is never a guest)" 1 "hosts VMs
 check "tenant: the host refusal names machine-role bootstrap" 1 "machine role" \
   env RIG_ROLE_MARKER="$TEN_FIX/host" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" staging-box
-check "tenant: an agent role refuses a machine-role box" 1 "never tailnet machines" \
+check "tenant: an agent role refuses a machine-role box" 1 "only an agentless, hardened" \
   env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" scratch-box
+check "tenant: AGENT=no alone does not tolerate a machine-role box" 1 "only an agentless, hardened" \
+  env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagenthook-box
 # The tenant guard's compat read (#77). This guard asks "does this marker name
 # a root-door policy?" through the resolver, so the pre-#77 spelling counts —
 # pattern-matching one spelling would fail OPEN here: the marker stops looking
 # like a machine's, the refusal never fires, and a tenant converge clobbers a
 # live fleet box's marker.
-check "tenant: an agent role refuses a PRE-#77 machine marker" 1 "never tailnet machines" \
+check "tenant: an agent role refuses a PRE-#77 machine marker" 1 "only an agentless, hardened" \
   env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" scratch-box
 check "tenant: staging-box refuses a PRE-#77 closed-door machine box" 1 "root door is not open" \

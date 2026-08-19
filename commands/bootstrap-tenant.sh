@@ -164,8 +164,8 @@ case "$EXISTING_MARKER" in
     die "this box hosts VMs (${EXISTING_MARKER}) — a tenant role converges box GUESTS, never the host under them. Bootstrap the metal with a machine role, not a registry tenant." ;;
 esac
 if [ -n "$EXISTING_ROOT_DOOR" ]; then
-  if [ "$TPL_AGENT" = "yes" ]; then
-    die "this box already carries a machine role (${EXISTING_MARKER}) — the agent tenants converge box guests, never tailnet machines. If this really is a guest, remove ${MARKER_PATH} and re-run."
+  if [ "$TPL_AGENT" = "yes" ] || [ "$TPL_HARDEN_SSHD" != "yes" ]; then
+    die "this box already carries a machine role (${EXISTING_MARKER}) — only an agentless, hardened server tenant may re-converge a workload-joined guest. If this really is the requested guest, remove ${MARKER_PATH} and re-run."
   fi
   # A `conflict` marker lands here too, and refuses: a box whose two door
   # claims disagree is not the open-door workload shape this tenant tolerates.
