@@ -139,7 +139,7 @@ templates_resolve \
   || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
 TPL_DIR="$REGISTRY_DIR/$ROLE"
 if [ ! -f "$TPL_DIR/template.env" ]; then
-  die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— that list is every tenant there is. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
+  die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— that is the whole of the resolved registry, and rig's own tree defines nothing beside it. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
 fi
 template_parse_env "$TPL_DIR/template.env" \
   || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
