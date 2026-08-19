@@ -26,8 +26,7 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <control-plane-server|workload-server|runner-server|
-                      staging-server|dev-server|workstation|custom>
+usage: rig bootstrap <registry-machine-role|custom>
                      (--users <path> | --no-users)
                      [--hostname <name>] [--root-door <closed|open>]
                      [--host <yes|no>] [--join <authkey|login>]
@@ -71,16 +70,13 @@ and has no SSH door of its own — entry is `box shell`, gated by the HOST's
 incus grants, which the host's own users file already converged. A fleet-wide
 operator file has nothing to converge in there.
 
-Roles are presets over the three traits; any flag overrides its trait.
-custom presets nothing and requires --hostname plus all three traits.
+Machine roles are read from the resolved template registry:
+EOF
+  printf '  %s (%s)\n\n' "${MACHINE_ROLES:-none}" "$(templates_source_desc)"
+  cat <<'EOF'
 
-  role                   root-door  host  join
-  control-plane-server   open       no    authkey
-  workload-server        open       no    authkey
-  runner-server          open       no    authkey
-  staging-server         open       yes   authkey
-  dev-server             closed     yes   authkey
-  workstation            closed     yes   login
+The registry presets the three traits; any flag overrides its trait. custom
+presets nothing and requires --hostname plus all three traits.
 
 THE SUFFIX NAMES THE FAMILY, not the door policy. '-server' means this role builds a
 fleet MACHINE — a tailnet node rig converges; '-box' (the tenant roles) means a
@@ -119,6 +115,13 @@ error: unset it, or pass --join authkey.
 EOF
 }
 
+resolve_machine_roles() {
+  templates_resolve || return 1
+  trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
+  MACHINE_ROLES="$(templates_machine_roles "$REGISTRY_DIR" | paste -sd'|' -)"
+  [ -n "$MACHINE_ROLES" ] || MACHINE_ROLES="none"
+}
+
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 MACHINE_TEMPLATE_DIR=""
@@ -127,7 +130,7 @@ case "$ROLE" in
     shift
     [ $# -eq 0 ] || die "bootstrap --undo takes no arguments" 2
     exec "$HERE/bootstrap-undo.sh" ;;
-  control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom) shift ;;
+  custom) shift ;;
   *-box)
     # The box TENANT roles (#31) are a different family — guests a box mints,
     # never tailnet machines — and live in their own mechanism, one script
@@ -137,41 +140,32 @@ case "$ROLE" in
     # a template added there is mintable with zero code changes here.
     # `rig bootstrap <role>` stays the single entrypoint for both families.
     exec "$HERE/bootstrap-tenant.sh" "$@" ;;
-  -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a '-box' tenant role from the template registry, e.g. claude-box)" 2 ;;
+  -h|--help)
+    resolve_machine_roles || exit 2
+    usage; exit 0 ;;
+  "")
+    resolve_machine_roles || exit 2
+    usage >&2
+    die "role required (custom; machine roles from $(templates_source_desc): $MACHINE_ROLES; or a '-box' tenant role from the template registry, e.g. claude-box)" 2 ;;
   *)
     shift
-    templates_resolve || exit 2
-    trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
+    resolve_machine_roles || exit 2
     MACHINE_TEMPLATE_DIR="$REGISTRY_DIR/$ROLE"
-    if [[ ! "$ROLE" =~ ^[a-z][a-z0-9-]*-server$ ]] \
+    if [[ ! "$ROLE" =~ ^[a-z][a-z0-9-]*$ ]] \
       || [ "$(template_family "$ROLE" 2>/dev/null || true)" != "machine" ] \
       || [ ! -f "$MACHINE_TEMPLATE_DIR/template.env" ]; then
-      MACHINE_ROLES="$(templates_machine_roles "$REGISTRY_DIR" | paste -sd'|' -)"
-      [ -n "$MACHINE_ROLES" ] || MACHINE_ROLES="none"
-      die "unknown role: $ROLE (want control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom; machine roles from $(templates_source_desc): $MACHINE_ROLES; or a '-box' tenant role)" 2
+      die "unknown role: $ROLE (want custom; machine roles from $(templates_source_desc): $MACHINE_ROLES; or a '-box' tenant role)" 2
     fi
     machine_template_parse_env "$MACHINE_TEMPLATE_DIR/template.env" \
       || die "invalid machine role $ROLE from $(templates_source_desc)" 2 ;;
 esac
 
-# Role→traits map — the single place a role's shape is declared (issue #26).
-# Roles are presets, nothing more: every behavior below keys off the traits,
-# so a flag override changes behavior without a new role, and custom exists
+# Registry roles are presets, nothing more: every behavior below keys off the
+# traits, so a flag override changes behavior without a new role. custom exists
 # for the shape nobody foresaw — it declares nothing and must state all three.
 ROOT_DOOR="" HOST="" JOIN=""
 case "$ROLE" in
-  control-plane-server) ROOT_DOOR=open   HOST=no  JOIN=authkey ;;
-  workload-server)      ROOT_DOOR=open   HOST=no  JOIN=authkey ;;
-  runner-server)        ROOT_DOOR=open   HOST=no  JOIN=authkey ;;
-  # The unattended VM host — the shape #31 retired when 'staging' moved to the
-  # tenant family, restored under a name that cannot be confused with its own
-  # guests. host=yes is the whole point: it is what installs the box CLI and
-  # runs box's setup-host further down, so this is a table row, not machinery.
-  staging-server)       ROOT_DOOR=open   HOST=yes JOIN=authkey ;;
-  dev-server)           ROOT_DOOR=closed HOST=yes JOIN=authkey ;;
-  workstation)          ROOT_DOOR=closed HOST=yes JOIN=login   ;;
-  custom)        ;;
+  custom) ;;
   *) ROOT_DOOR="$TPL_ROOT_DOOR" HOST="$TPL_HOST" JOIN="$TPL_JOIN" ;;
 esac
 

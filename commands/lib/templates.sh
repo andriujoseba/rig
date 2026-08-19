@@ -36,10 +36,9 @@
 # newer templates by default (ruled 2026-07-24 on #110: pinned, not
 # main-tracked). RIG_TEMPLATES_REF overrides it per mint.
 #
-# Currently the seed tree (rig-templates#1's head — fetchable from the
-# upstream archive already, an ancestor of its main once merged): the four
-# agent tenants ported byte-equivalent from the case arms this PR cut.
-RIG_TEMPLATES_PIN=be749f7fd1ff8dd7c2359bbce7fd6abd3f403eb0
+# Registry head reviewed and merged by rig-templates#4: the four agent tenants
+# plus the six machine-role definitions formerly carried in bootstrap.sh.
+RIG_TEMPLATES_PIN=47bb132c81b25658e5b5fb3c2f7d0f2fdb14100d
 
 # The template.env schema. Grammar: blank lines, '#' comments, and
 # KEY="value" — nothing else. Parsed by regex, never sourced.
