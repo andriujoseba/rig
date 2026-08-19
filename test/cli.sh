@@ -5,6 +5,22 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0 FAIL=0
 
+# The six reviewed registry definitions, copied byte-for-byte from
+# rig-templates#4. Exporting the local source keeps every bootstrap assertion
+# offline while still exercising the production resolver and parser.
+BOOT_TPL_FIX="$(mktemp -d)"
+mkdir -p \
+  "$BOOT_TPL_FIX/control-plane-server" "$BOOT_TPL_FIX/workload-server" \
+  "$BOOT_TPL_FIX/runner-server" "$BOOT_TPL_FIX/staging-server" \
+  "$BOOT_TPL_FIX/dev-server" "$BOOT_TPL_FIX/workstation"
+printf '# control-plane-server — control-plane fleet machine traits ported from\n# rig'\''s bootstrap table in rig#154.\nROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/control-plane-server/template.env"
+printf '# workload-server — workload fleet machine traits ported from rig'\''s\n# bootstrap table in rig#154.\nROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/workload-server/template.env"
+printf '# runner-server — runner fleet machine traits ported from rig'\''s bootstrap\n# table in rig#154.\nROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/runner-server/template.env"
+printf '# staging-server — the unattended VM host. HOST="yes" installs the box CLI\n# and runs box'\''s setup-host; this is the role'\''s defining trait, not machinery.\nROOT_DOOR="open"\nHOST="yes"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/staging-server/template.env"
+printf '# dev-server — interactive development fleet machine traits ported from\n# rig'\''s bootstrap table in rig#154.\nROOT_DOOR="closed"\nHOST="yes"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/dev-server/template.env"
+printf '# workstation — joins by interactive login so it remains user-owned and\n# untagged; no pre-auth key is used or stored.\nROOT_DOOR="closed"\nHOST="yes"\nJOIN="login"\n' > "$BOOT_TPL_FIX/workstation/template.env"
+export RIG_TEMPLATES_DIR="$BOOT_TPL_FIX"
+
 # check <desc> <want_exit> <want_substr> <cmd...>
 # Runs cmd, asserts exit code and (if non-empty) that combined output
 # contains want_substr.
@@ -32,6 +48,8 @@ check "unknown command exits 2"          2 "unknown command" "$ROOT/bin/rig" fro
 check "bare coolify shows usage, exit 2" 2 "usage:" "$ROOT/bin/rig" coolify
 
 check "bootstrap: role required, exit 2"   2 "role required"  "$ROOT/commands/bootstrap.sh"
+check "bootstrap: no-role refusal lists registry machine roles" 2 "workstation" "$ROOT/commands/bootstrap.sh"
+check "bootstrap: no-role refusal lists custom" 2 "custom" "$ROOT/commands/bootstrap.sh"
 check "bootstrap: --help exits 0"          0 "usage:"         "$ROOT/commands/bootstrap.sh" --help
 check "bootstrap: unknown role exits 2"    2 "unknown role"   "$ROOT/commands/bootstrap.sh" potato
 check "bootstrap: unknown flag exits 2"    2 "unknown flag"   "$ROOT/commands/bootstrap.sh" workload-server --nope
@@ -65,6 +83,21 @@ check "bootstrap: the catch-all tag:server refusal is present" 0 "" \
 # refusal exists to prevent — and nothing else in the suite would notice.
 check "bootstrap: staging-server is not in the tag:server allow-list" 1 "" \
   grep -qE '^ *control-plane-server\|workload-server\)[^#]*staging-server' "$ROOT/commands/bootstrap.sh"
+check "bootstrap: the six-role traits table is retired" 1 "" \
+  grep -qE '^[[:space:]]*(control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation)\).*ROOT_DOOR=' "$ROOT/commands/bootstrap.sh"
+
+# Parse the copied registry rows through production code and pin their exact
+# trait tuples to the table this issue retires.
+machine_tuple() {
+  bash -c '. "$1/commands/lib/templates.sh"; machine_template_parse_env "$2/template.env"; printf "%s/%s/%s" "$TPL_ROOT_DOOR" "$TPL_HOST" "$TPL_JOIN"' _ "$ROOT" "$BOOT_TPL_FIX/$1"
+}
+for row in \
+  control-plane-server:open/no/authkey workload-server:open/no/authkey \
+  runner-server:open/no/authkey staging-server:open/yes/authkey \
+  dev-server:closed/yes/authkey workstation:closed/yes/login; do
+  role="${row%%:*}" expected="${row#*:}"
+  check "bootstrap: registry tuple for $role matches 535caea" 0 "$expected" machine_tuple "$role"
+done
 
 # --- the role taxonomy (#76): -server names the family, and it was a hard cut -
 # Every machine role carries the suffix; custom and workstation deliberately do
@@ -589,6 +622,8 @@ fi
 # live in heavy-duty/rig-templates, and this suite must hold whatever those
 # say (offline is the point: no fetch, no network, no coupling).
 TPL_FIX="$(mktemp -d)"
+cp -r "$BOOT_TPL_FIX"/. "$TPL_FIX/"
+unset RIG_TEMPLATES_DIR
 mkdir -p "$TPL_FIX/scratch-box"
 cat > "$TPL_FIX/scratch-box/template.env" <<'TPLEOF'
 # comments and blank lines are the only non-KEY="value" grammar
@@ -615,8 +650,6 @@ mkdir -p "$TPL_FIX/badapt-box"
 printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nAPT_EXTRAS="zsh -o"\n' > "$TPL_FIX/badapt-box/template.env"
 mkdir -p "$TPL_FIX/scratch-server"
 printf 'ROOT_DOOR="closed"\nHOST="no"\nJOIN="login"\n' > "$TPL_FIX/scratch-server/template.env"
-mkdir -p "$TPL_FIX/workstation"
-printf 'ROOT_DOOR="closed"\nHOST="yes"\nJOIN="authkey"\n' > "$TPL_FIX/workstation/template.env"
 mkdir -p "$TPL_FIX/baddoor-server"
 printf 'ROOT_DOOR="ajar"\nHOST="no"\nJOIN="authkey"\n' > "$TPL_FIX/baddoor-server/template.env"
 mkdir -p "$TPL_FIX/tenantkeys-server"
@@ -919,7 +952,7 @@ check "machine template: unknown role lists machine definitions" 2 "scratch-serv
   env RIG_TEMPLATES_DIR="$TPL_FIX" "$ROOT/commands/bootstrap.sh" absent-server
 check "machine template: unknown role names the resolved source" 2 "RIG_TEMPLATES_DIR" \
   env RIG_TEMPLATES_DIR="$TPL_FIX" "$ROOT/commands/bootstrap.sh" absent-server
-check "machine template: a registry role cannot shadow a built-in" 2 "unset TS_AUTHKEY" \
+check "machine template: the registry owns workstation's traits" 2 "unset TS_AUTHKEY" \
   env RIG_TEMPLATES_DIR="$TPL_FIX" TS_AUTHKEY=x \
   "$ROOT/commands/bootstrap.sh" workstation --no-users
 
@@ -1106,6 +1139,19 @@ snapshot_resolve='set -euo pipefail
   printf "%s\n%s\n" "$REGISTRY_DIR" "$(templates_source_desc)"'
 check "templates: matching snapshot resolves with poisoned curl" 0 "(snapshot)" \
   env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_resolve" _ "$TPL_WORK/rig"
+# Parse all six rows from that same snapshot while curl is poisoned. This is
+# the offline converge input: if resolution touches the network, exit 99 wins;
+# if a row is missing or drifted, its production parser or tuple check fails.
+# shellcheck disable=SC2016  # expanded by the inner bash
+snapshot_machine_inputs='set -euo pipefail
+  . "$1/commands/lib/templates.sh"
+  templates_resolve
+  for role in control-plane-server workload-server runner-server staging-server dev-server workstation; do
+    machine_template_parse_env "$REGISTRY_DIR/$role/template.env"
+    printf "%s=%s/%s/%s\n" "$role" "$TPL_ROOT_DOOR" "$TPL_HOST" "$TPL_JOIN"
+  done'
+check "templates: snapshot serves all six machine tuples with poisoned curl" 0 "workstation=closed/yes/login" \
+  env PATH="$TPL_WORK/bin:$PATH" bash -c "$snapshot_machine_inputs" _ "$TPL_WORK/rig"
 
 # A stale directory and an empty current directory are both unusable. The
 # poisoned fetch exit is folded into templates_resolve's normal loud refusal;
@@ -1177,7 +1223,7 @@ check "machine template: install failure names role and source" 0 "" \
 # shellcheck disable=SC2016
 check "machine template: install runs from its definition with RIG_ROLE" 0 "" \
   grep -qF 'cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" bash ./install.sh' "$ROOT/commands/bootstrap.sh"
-rm -rf "$TPL_FIX" "$TPL_WORK"
+rm -rf "$BOOT_TPL_FIX" "$TPL_FIX" "$TPL_WORK"
 
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
 # idiom): nothing in the tenant mechanism touches the tailnet, prompts, or

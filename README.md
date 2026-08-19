@@ -177,7 +177,7 @@ the **host's** `incus` grants, which the host's own users file already
 converged. A fleet-wide operator file has nothing to converge in there, and
 requiring one would break the mint-time path outright.
 
-**Roles are presets over three orthogonal traits**, nothing more — every
+**Registry roles are presets over three orthogonal traits**, nothing more — every
 per-role behavior keys off a trait, so any flag overrides its trait without
 needing a new role (`rig bootstrap workstation --host no` for a laptop that
 will never run VMs), and `custom` exists for the shape nobody foresaw: it
@@ -188,6 +188,10 @@ presets nothing and requires `--hostname` plus all three traits.
 | `root-door` | `closed`, `open` | root SSH's fate once operators exist — `closed` shuts it via `rig users close-root`, `open` keeps it as the control plane's automation door |
 | `host`  | `yes`, `no`        | whether the box exists to run VMs — the `/dev/kvm` advisory and, on `yes`, installing the `box` CLI + running box's `setup-host` |
 | `join`  | `authkey`, `login` | tagged pre-auth key (fleet identity) vs interactive browser login (user-owned device) |
+
+The role-to-trait rows below live in the pinned
+[rig-templates registry](https://github.com/heavy-duty/rig-templates/tree/47bb132c81b25658e5b5fb3c2f7d0f2fdb14100d),
+not in rig's bootstrap mechanism.
 
 | role                   | root-door | host | join    | tailnet tag |
 |------------------------|-----------|------|---------|-------------|
@@ -405,12 +409,11 @@ tailnet as *your* device rather than the fleet's.
 
 ### Machine-role templates
 
-Machine presets can also live in the
+Machine presets live in the
 [heavy-duty/rig-templates](https://github.com/heavy-duty/rig-templates)
 registry. A `*-server` directory is a fleet-machine definition; the exact
 name `workstation` is the deliberate suffix-less exception. Its
-`template.env` contains exactly the three traits bootstrap's built-in table
-uses:
+`template.env` contains exactly the three traits bootstrap consumes:
 
 ```dotenv
 ROOT_DOOR="open"    # open|closed
@@ -424,12 +427,13 @@ the tailnet join, host setup, role marker prerequisites, and operator
 convergence. A nonzero exit fails bootstrap and names the role and registry
 source. The definition owns idempotence, just as bootstrap does.
 
-Built-in roles and `custom` take precedence over registry names. Any other
-non-tenant role is looked up in the resolved registry; the same three source
-knobs below apply, including `RIG_TEMPLATES_DIR` for an offline local
-definition. Pin reviewed registry content into rig's tree before using it on
-fleet machines: an optional machine `install.sh` executes as root on metal,
-and an override is the operator explicitly choosing a different trust root.
+`custom` remains in rig and takes precedence over registry names because it
+has no preset traits. Every named non-tenant role is looked up in the resolved
+registry; the same three source knobs below apply, including
+`RIG_TEMPLATES_DIR` for an offline local definition. Pin reviewed registry
+content into rig's tree before using it on fleet machines: an optional machine
+`install.sh` executes as root on metal, and an override is the operator
+explicitly choosing a different trust root.
 
 ### `rig bootstrap <role>-box` — the box tenants
 
