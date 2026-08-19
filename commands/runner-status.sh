@@ -26,10 +26,9 @@ usage: rig runner status [--name <name>] [--user <name>]
 
 With no --name, lists every runner on this box: name, registration scope and
 target, install directory, systemd unit and its state, and whether rig manages
-it. Instances
-are found both under the runner user's ~/actions-runner and by scanning
-systemd for actions.runner.* units, so a runner rig did not create is listed
-as `unmanaged` rather than left out.
+it. Instances are found both under the runner user's ~/actions-runner and by
+scanning systemd for actions.runner.* units, so a runner rig did not create is
+listed as `unmanaged` rather than left out.
 
 With --name, prints the detail view for that one instance: its repository or
 organization scope, organization runner group when applicable, runner name,

@@ -97,13 +97,17 @@ runner_token_endpoint() {
 
 # runner_record_value <runner_dir> <scope|group|labels>
 #
-# New registrations keep all three fields in .rig-labels. A pre-#165 file is
-# one plain labels line, and remains readable as labels; it says nothing about
-# scope or group, which are therefore reported honestly as unrecorded.
+# New registrations carry a format marker followed by all three fields in
+# .rig-labels. The marker is not enough on its own: a pre-#165 file may contain
+# ANY legal one-line label value, including the marker itself. Requiring a
+# second, scope-shaped line keeps every one-line legacy record unambiguous.
+# Legacy files remain readable as labels and say nothing about scope or group,
+# which are therefore reported honestly as unrecorded.
 runner_record_value() {
   local file="$1/.rig-labels" key="$2"
   [ -r "$file" ] || return 0
-  if head -n1 "$file" | grep -q '^scope='; then
+  if [ "$(sed -n '1p' "$file")" = "format=rig-runner-state-v1" ] \
+    && sed -n '2p' "$file" | grep -qE '^scope=(repo|org)$'; then
     sed -n "s/^${key}=//p" "$file" | head -n1
   elif [ "$key" = "labels" ]; then
     head -n1 "$file"
@@ -112,7 +116,8 @@ runner_record_value() {
 
 # runner_write_record <runner_dir> <scope> <group> <labels>
 runner_write_record() {
-  printf 'scope=%s\ngroup=%s\nlabels=%s\n' "$2" "$3" "$4" > "$1/.rig-labels"
+  printf 'format=rig-runner-state-v1\nscope=%s\ngroup=%s\nlabels=%s\n' \
+    "$2" "$3" "$4" > "$1/.rig-labels"
 }
 
 # runner_agent_name <runner_dir> — the runner's name, empty when unregistered.

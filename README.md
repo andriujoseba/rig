@@ -1053,7 +1053,7 @@ the same repository or organization re-uses the binary, skips registration,
 and never asks for a token. A different target, runner group, or repo↔org
 scope change **refuses** and names both sides: widening one repo to a whole
 organization is a trust-boundary act, not convergence. That move belongs to
-[`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo--org-org-name-name).
+[`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo----org-org---name-name).
 Running a *second* runner beside it is this command with a new `--name`, and
 the refusal says so.
 
@@ -1064,7 +1064,7 @@ would report success.
 A name whose *directory* holds a runner that answers to something else is
 refused for the same reason, one door along. Two boxes reach that state: a
 hand-rolled `~github-runner/actions-runner/mine` registered as `other`, and one
-where [`repoint --rename`](#rig-runner-repoint---repo-ownerrepo--org-org-name-name)
+where [`repoint --rename`](#rig-runner-repoint---repo-ownerrepo----org-org---name-name)
 moved the identity and left the directory — `<base>/old` answering to `fresh`.
 Installing into either would adopt the runner already there rather than create
 the one you asked for. The refusal names what the directory answers to, which
