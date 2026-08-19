@@ -40,14 +40,15 @@ commands:
   bootstrap <role>-box [--user <name>]
       The box TENANT roles: converge a box-minted guest. The '-box' suffix
       names the family (a guest, vs the '-server' machine roles above).
-      The agent tenants (claude-box, codex-box, grok-box, kimi-box, …) are
-      DEFINED in the heavy-duty/rig-templates registry — resolved via
-      RIG_TEMPLATES_DIR > RIG_TEMPLATES_REF > the in-tree pin — and land
+      EVERY tenant is DEFINED in the heavy-duty/rig-templates registry —
+      resolved via RIG_TEMPLATES_DIR > RIG_TEMPLATES_REF > the in-tree pin.
+      The agent tenants (claude-box, codex-box, grok-box, kimi-box, …) land
       the agent toolbelt (git, gh, tmux, docker), the agent's CLI on the
       system PATH, and the agent-context file (with the box#80 guard:
-      never run box setup-host inside a box). staging-box, in rig's own
-      tree, lands box#69's server posture — docker + sshd hardening; its
-      tailnet join stays operator-run via 'rig bootstrap workload-server'.
+      never run box setup-host inside a box). An agentless definition such
+      as staging-box lands box#69's server posture instead — docker + sshd
+      hardening; its tailnet join stays operator-run via 'rig bootstrap
+      workload-server'.
       Creds-free and non-interactive: box auto-runs these at mint. Run as
       root, inside the box.
   coolify install --version <pin>

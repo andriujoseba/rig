@@ -39,7 +39,7 @@
 # Registry head reviewed and merged by rig-templates#10 (closing
 # rig-templates#11): the four agent tenants, the six machine-role definitions
 # formerly carried in bootstrap.sh, and staging-box — the agentless, hardened
-# tenant that was rig's last in-tree role definition (#185). The MERGE commit,
+# tenant whose arrival leaves rig's tree defining no role at all (#185). The MERGE commit,
 # not the merged PR's head: that repo merges with merge commits today, but a
 # switch to squash or rebase orphans the head, and only the commit on `main`
 # is a pin a fetch can always resolve.

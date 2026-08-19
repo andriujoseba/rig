@@ -31,10 +31,9 @@ usage: rig bootstrap <registry-machine-role|custom>
                      [--hostname <name>] [--root-door <closed|open>]
                      [--host <yes|no>] [--join <authkey|login>]
        rig bootstrap <role>-box [--user <name>]
-                     (the box TENANT roles — agent roles come from the
-                      heavy-duty/rig-templates registry, staging-box remains
-                      temporarily in rig; see their own --help — they take no
-                      --users, see below)
+                     (the box TENANT roles — every one of them defined in the
+                      heavy-duty/rig-templates registry; see their own --help
+                      — they take no --users, see below)
        rig bootstrap --undo
                      leave the tailnet only when the role marker proves rig
                      performed the join, then remove the role marker
@@ -62,9 +61,8 @@ and per-human accounts keep attribution intact for the times someone does go
 in. So the complete path is the default path and skipping it is a deliberate
 --no-users, not an omission.
 
---users does NOT reach the box TENANT roles (any '-box' name, e.g.
-claude-box, staging-box). A
-tenant is a box-minted GUEST: box auto-runs its bootstrap at mint,
+--users does NOT reach the box TENANT roles (any '-box' name, e.g. claude-box,
+staging-box). A tenant is a box-minted GUEST: box auto-runs its bootstrap at mint,
 non-interactively, with no file to hand it; the guest never joins the tailnet
 and has no SSH door of its own — entry is `box shell`, gated by the HOST's
 incus grants, which the host's own users file already converged. A fleet-wide
@@ -153,9 +151,8 @@ case "$ROLE" in
   *-box)
     # The box TENANT roles (#31) are a different family — guests a box mints,
     # never tailnet machines — and live in their own mechanism, one script
-    # parameterized per DEFINITION fetched from the template registry (#110;
-    # staging-box remains in-tree until its new definition can land).
-    # Dispatched on the FAMILY SUFFIX (#76), not
+    # parameterized per DEFINITION fetched from the template registry (#110),
+    # every tenant role included (#185). Dispatched on the FAMILY SUFFIX (#76), not
     # an enumerated list: which '-box' roles exist is the registry's fact, so
     # a template added there is mintable with zero code changes here.
     # `rig bootstrap <role>` stays the single entrypoint for both families.

@@ -190,7 +190,7 @@ presets nothing and requires `--hostname` plus all three traits.
 | `join`  | `authkey`, `login` | tagged pre-auth key (fleet identity) vs interactive browser login (user-owned device) |
 
 The role-to-trait rows below live in the pinned
-[rig-templates registry](https://github.com/heavy-duty/rig-templates/tree/47bb132c81b25658e5b5fb3c2f7d0f2fdb14100d),
+[rig-templates registry](https://github.com/heavy-duty/rig-templates/tree/f77deae523112293320f29e1f8e5036257c6a685),
 not in rig's bootstrap mechanism.
 
 | role                   | root-door | host | join    | tailnet tag |
@@ -466,12 +466,12 @@ there, never a mechanism edit here (#109 was the evidence: adding kimi, pure
 data, meant editing six files in this repo). Which `-box` roles exist is the
 registry's fact; `rig bootstrap <anything>-box` dispatches on the family
 suffix and refuses an unknown role by listing what the resolved registry
-actually contains. Tenant definitions now default to `AGENT="yes"` and
+actually contains. Tenant definitions default to `AGENT="yes"` and
 `HARDEN_SSHD="no"`; `AGENT="no"` removes the CLI, context, node and creds
 contract, while `HARDEN_SSHD="yes"` independently invokes the shared
-`lib/sshd.sh` mechanism. `staging-box` remains the one in-tree compatibility
-definition — user `ops`, no agent, box#69's hardened server posture — until
-that new schema has landed and its registry definition can follow.
+`lib/sshd.sh` mechanism. Those two keys are what let the registry describe
+`staging-box` — user `ops`, no agent, box#69's hardened server posture — so
+rig's tree now defines **no** tenant role at all (#185).
 
 **Where the registry comes from — precedence high to low:**
 
