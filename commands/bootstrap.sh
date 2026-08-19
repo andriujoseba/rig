@@ -31,8 +31,9 @@ usage: rig bootstrap <registry-machine-role|custom>
                      [--hostname <name>] [--root-door <closed|open>]
                      [--host <yes|no>] [--join <authkey|login>]
        rig bootstrap <role>-box [--user <name>]
-                     (the box TENANT roles come from the
-                      heavy-duty/rig-templates registry; see their own --help — they take no
+                     (the box TENANT roles — agent roles come from the
+                      heavy-duty/rig-templates registry, staging-box remains
+                      temporarily in rig; see their own --help — they take no
                       --users, see below)
        rig bootstrap --undo
                      leave the tailnet only when the role marker proves rig
@@ -152,7 +153,8 @@ case "$ROLE" in
   *-box)
     # The box TENANT roles (#31) are a different family — guests a box mints,
     # never tailnet machines — and live in their own mechanism, one script
-    # parameterized per DEFINITION fetched from the template registry (#110).
+    # parameterized per DEFINITION fetched from the template registry (#110;
+    # staging-box remains in-tree until its new definition can land).
     # Dispatched on the FAMILY SUFFIX (#76), not
     # an enumerated list: which '-box' roles exist is the registry's fact, so
     # a template added there is mintable with zero code changes here.

@@ -1047,7 +1047,8 @@ check "machine template: the registry owns workstation's traits" 2 "unset TS_AUT
 # because whoever hits it has the halves confused: the guest (staging-box), the metal
 # (staging-server). An agent tenant refuses ANY machine-role box; staging-box
 # tolerates exactly the workload-joined guest (root-door=open host=no) and refuses the
-# rest. The definition is resolved first because AGENT is the policy input.
+# rest. Registry definitions are resolved first because AGENT is the policy
+# input; staging-box carries the same tuple in its temporary in-tree fallback.
 TEN_FIX="$(mktemp -d)"
 printf 'role=workload-server root-door=open host=no join=authkey\n' > "$TEN_FIX/machine"
 printf 'role=custom root-door=closed host=no join=authkey\n'        > "$TEN_FIX/closed"
@@ -1141,8 +1142,8 @@ if [ "$(id -u)" -ne 0 ]; then
   check "tenant: a valid definition parses, refuses non-root" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
     "$ROOT/commands/bootstrap-tenant.sh" scratch-box
-  check "tenant: staging-box resolves from the registry" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  check "tenant: staging-box compatibility fallback needs no registry" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR=/nonexistent/registry \
     "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: staging-box tolerates a workload-joined guest's marker" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
@@ -1368,8 +1369,11 @@ check "tenant: HARDEN_SSHD invokes the shared sshd lib" 0 "" \
 # shellcheck disable=SC2016
 check "tenant: HARDEN_SSHD installs sshd for agent tenants too" 0 "" \
   grep -qE 'apt-get install .*cron openssh-server.*\$TPL_APT_EXTRAS' "$ROOT/commands/bootstrap-tenant.sh"
-check "tenant: staging-box has zero in-tree role branches" 1 "" \
-  grep -n staging-box "$ROOT/commands/bootstrap-tenant.sh"
+# The dependency-safe split keeps exactly one compatibility definition until
+# the registry PR can merge against this schema; the final #155 PR removes it.
+# shellcheck disable=SC2016
+check "tenant: staging-box compatibility tuple selects no-agent hardening" 0 "" \
+  grep -qF 'TPL_AGENT="no"' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: docker lands via docker's own installer" 0 "" \
   grep -q "get.docker.com" "$ROOT/commands/bootstrap-tenant.sh"
 # The #15 lesson pinned: 'box exec' shells read no rc files, so the CLI must
