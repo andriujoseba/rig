@@ -1053,7 +1053,8 @@ check "machine template: the registry owns workstation's traits" 2 "unset TS_AUT
 # (staging-server). An agent tenant refuses ANY machine-role box; staging-box
 # tolerates exactly the workload-joined guest (root-door=open host=no) and refuses the
 # rest. Registry definitions are resolved first because AGENT is the policy
-# input; staging-box carries the same tuple in its temporary in-tree fallback.
+# input, and since #185 staging-box's tuple comes from the registry like every
+# other tenant's — the policy below is definition-driven, never role-name-driven.
 TEN_FIX="$(mktemp -d)"
 printf 'role=workload-server root-door=open host=no join=authkey\n' > "$TEN_FIX/machine"
 printf 'role=custom root-door=closed host=no join=authkey\n'        > "$TEN_FIX/closed"
@@ -1159,7 +1160,16 @@ if [ "$(id -u)" -ne 0 ]; then
   check "tenant: a valid definition parses, refuses non-root" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
     "$ROOT/commands/bootstrap-tenant.sh" scratch-box
-  check "tenant: staging-box compatibility fallback needs no registry" 1 "must run as root" \
+  # #185: staging-box now needs the registry exactly as every other tenant
+  # does. Reaching the root check proves the REGISTRY path resolved and parsed
+  # it — the in-tree tuple that used to answer here is gone.
+  check "tenant: staging-box resolves through the registry like any other tenant" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+    "$ROOT/commands/bootstrap-tenant.sh" staging-box
+  # ...and the other half of that measurement: with the registry unreachable it
+  # must now FAIL, where the in-tree fallback used to carry it through. Without
+  # this, the check above cannot tell which path ran.
+  check "tenant: staging-box needs the registry (no in-tree fallback survives)" 2 "cannot resolve the template registry" \
     env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR=/nonexistent/registry \
     "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: staging-box tolerates a workload-joined guest's marker" 1 "must run as root" \
@@ -1176,6 +1186,24 @@ if [ "$(id -u)" -ne 0 ]; then
 else
   echo "skip: tenant non-root refusals (running as root)"
 fi
+# #185's must-fail, and the criterion the retirement is measured by: point the
+# resolver at a registry that RESOLVES but does not define staging-box, and the
+# failure must be the ordinary unknown-role refusal — the registry's own role
+# list, no surviving claim that rig's tree defines it. This is the shape a
+# mis-set RIG_TEMPLATES_REF produces in the field.
+TPL_NO_STAGING="$(mktemp -d)"
+cp -r "$TPL_FIX"/. "$TPL_NO_STAGING/"
+rm -rf "$TPL_NO_STAGING/staging-box"
+check "tenant: a registry without staging-box refuses it as an unknown role" 2 "unknown tenant role: staging-box" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_NO_STAGING" \
+  "$ROOT/commands/bootstrap-tenant.sh" staging-box
+check "tenant: that refusal lists what the registry does define" 2 "scratch-box" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_NO_STAGING" \
+  "$ROOT/commands/bootstrap-tenant.sh" staging-box
+check "tenant: that refusal names the resolved source" 2 "RIG_TEMPLATES_DIR" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_NO_STAGING" \
+  "$ROOT/commands/bootstrap-tenant.sh" staging-box
+rm -rf "$TPL_NO_STAGING"
 rm -rf "$TEN_FIX"
 
 # The same definition served from a REF (tarball fetch, curl stubbed — the
@@ -1408,11 +1436,22 @@ check "tenant: hardening runs through the shared sshd lib" 0 "" \
 # shellcheck disable=SC2016
 check "tenant: HARDEN_SSHD installs sshd for agent tenants too" 0 "" \
   grep -qE 'apt-get install .*cron openssh-server.*\$TPL_APT_EXTRAS' "$ROOT/commands/bootstrap-tenant.sh"
-# The dependency-safe split keeps exactly one compatibility definition until
-# the registry PR can merge against this schema; the final #155 PR removes it.
+# #185 closed the split: rig's tree now defines NO tenant role, so the
+# mechanism may never branch on a role NAME — every tenant fact is the
+# resolved registry's template.env. Grep-pinned in both directions, because a
+# reintroduced special case would converge silently rather than fail a test.
+check "tenant: no role-name special case survives in the mechanism" 1 "" \
+  grep -nE '"?\$\{?ROLE\}?"?[[:space:]]*==?[[:space:]]*"?[a-z][a-z0-9-]*-box' "$ROOT/commands/bootstrap-tenant.sh"
 # shellcheck disable=SC2016
-check "tenant: staging-box compatibility tuple selects no-agent hardening" 0 "" \
-  grep -qF 'TPL_AGENT="no"' "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: the definition directory is always the registry's" 0 "" \
+  grep -qF 'TPL_DIR="$REGISTRY_DIR/$ROLE"' "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: templates_resolve is unconditional (no in-tree branch above it)" 0 "" \
+  grep -qE '^templates_resolve \\$' "$ROOT/commands/bootstrap-tenant.sh"
+# The no-agent hardening path stays definition-driven — the same tuple, now
+# read from data rather than spelled in this script.
+# shellcheck disable=SC2016
+check "tenant: AGENT=no drops the agent surface" 0 "" \
+  grep -qF 'if [ "$TPL_AGENT" = "yes" ]; then' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: docker lands via docker's own installer" 0 "" \
   grep -q "get.docker.com" "$ROOT/commands/bootstrap-tenant.sh"
 # The #15 lesson pinned: 'box exec' shells read no rc files, so the CLI must

@@ -12,16 +12,15 @@
 # role (template.env, install.sh, creds.md), resolved through lib/templates.sh
 # (RIG_TEMPLATES_DIR > RIG_TEMPLATES_REF > the in-tree pin) — so adding a
 # tenant is a data PR there, never an edit here (#109 is the scar: adding
-# kimi, pure data, meant editing six files in this repo). The schema now
-# supports agentless and hardened tenants through AGENT/HARDEN_SSHD. Until the
-# first such definition lands in the pinned registry, staging-box remains the
-# one compatibility definition in rig's tree.
+# kimi, pure data, meant editing six files in this repo). The schema also
+# describes agentless and hardened tenants through AGENT/HARDEN_SSHD, so the
+# registry defines EVERY tenant role and rig's tree defines none (#185).
 #
 # Creds-free BY CONTRACT: box auto-runs these at mint ('box exec … rig
 # bootstrap claude-box'), so every path here is non-interactive and nothing joins
 # or admits — no tailnet, no keys, no prompts. That is also why the registry
 # fetch is UNAUTHENTICATED: a mint holds nothing to authenticate with.
-# staging-box's tailnet join stays operator-run ('rig bootstrap
+# An agentless server tenant's tailnet join stays operator-run ('rig bootstrap
 # workload-server' through 'box shell'), exactly the creds split box#69 designed.
 # Convergent: safe to re-run; a second run changes nothing.
 set -euo pipefail
@@ -49,16 +48,15 @@ creds-free seed (base image, user, rig preinstalled); this converges the
 tenant on top, and re-runs converge an existing box to a new spec.
 
   <role>-box          a tenant DEFINED IN THE REGISTRY
-                      (heavy-duty/rig-templates). Agent definitions converge
+                      (heavy-duty/rig-templates) — claude-box, codex-box,
+                      grok-box, kimi-box, staging-box, and whatever else the
+                      resolved registry defines. Agent definitions converge
                       base tooling, docker, their CLI and context file;
                       AGENT="no" definitions omit that agent surface and
                       HARDEN_SSHD="yes" adds shared server hardening.
-  staging-box         the temporary in-tree compatibility definition: user
-                      ops, no agent surface, docker + sshd hardening. It moves
-                      to the registry after this schema support lands.
 
   --user <name>       the tenant user the box seed created (default: the
-                      definition's USER; staging-box defaults to `ops`)
+                      definition's USER)
 
 The registry source is three knobs, precedence high to low:
   RIG_TEMPLATES_DIR   a local folder (no fetch — the offline/test path, and
@@ -79,14 +77,13 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  staging-box) shift ;;
   *-box)
     # The family suffix is the whole gate here — WHICH '-box' roles exist is
     # the resolved registry's fact, checked below, so a template added to the
     # registry is mintable with zero code changes in rig (#110).
     shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "tenant role required (a '-box' role from the template registry, or staging-box)" 2 ;;
+  "") usage >&2; die "tenant role required (a '-box' role from the template registry)" 2 ;;
   *) die "unknown tenant role: $ROLE — tenant roles carry the '-box' family suffix (#76); the machine roles are control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom" 2 ;;
 esac
 # The suffix rule above admits ANY '-box' name, so the charset is pinned
@@ -111,9 +108,9 @@ while [ $# -gt 0 ]; do
     --hostname|--root-door|--host|--join)
       # The machine-role traits, refused with a story rather than "unknown
       # flag": a tenant is a guest, not a tailnet machine — its shape comes
-      # from the box seed, and the one trait-shaped thing a staging-box guest
-      # eventually does (join the tailnet as a workload) is deliberately not
-      # here: it holds a credential, so it stays operator-run.
+      # from the box seed, and the one trait-shaped thing an agentless server
+      # guest eventually does (join the tailnet as a workload) is deliberately
+      # not here: it holds a credential, so it stays operator-run.
       die "tenant roles have no traits: $1 belongs to the machine roles (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom). A tenant box's shape comes from its seed; staging-box's tailnet join is operator-run via 'rig bootstrap workload-server'. The METAL that hosts these guests is 'rig bootstrap staging-server'." 2 ;;
     --ts-tag)
       [ $# -ge 2 ] && shift
@@ -134,35 +131,21 @@ esac
 
 # --- the definition ----------------------------------------------------------
 # Resolved and parsed before marker policy: whether a tenant carries an agent
-# and whether it hardens sshd are definition facts. staging-box spells the
-# same tuple in-tree only until its registry definition can land against this
-# merged schema. This is also the mint-time guard for sources that registry CI
-# never saw.
+# and whether it hardens sshd are definition facts, carried by the registry for
+# every tenant without exception. This is also the mint-time guard for sources
+# that registry CI never saw.
 trap '[ -n "$TEMPLATES_TMP" ] && rm -rf "$TEMPLATES_TMP"' EXIT
-TPL_DIR=""
-if [ "$ROLE" = "staging-box" ]; then
-  TPL_USER="ops"
-  TPL_AGENT="no"
-  TPL_HARDEN_SSHD="yes"
-  TPL_CONTEXT_PATH=""
-  TPL_CLI_NAME=""
-  TPL_CLI_SRC=""
-  TPL_PATH_LINE=""
-  TPL_NEEDS_NODE="no"
-  TPL_APT_EXTRAS=""
-else
-  templates_resolve \
-    || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
-  TPL_DIR="$REGISTRY_DIR/$ROLE"
-  if [ ! -f "$TPL_DIR/template.env" ]; then
-    die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— and staging-box is temporarily in rig's own tree. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
-  fi
-  template_parse_env "$TPL_DIR/template.env" \
-    || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
-  if [ "$TPL_AGENT" = "no" ] && \
-    { [ -e "$TPL_DIR/creds.md" ] || [ -L "$TPL_DIR/creds.md" ]; }; then
-    die "invalid definition for $ROLE in $(templates_source_desc) — creds.md is not allowed when AGENT=no" 2
-  fi
+templates_resolve \
+  || die "cannot resolve the template registry ($(templates_source_desc)) — see above" 2
+TPL_DIR="$REGISTRY_DIR/$ROLE"
+if [ ! -f "$TPL_DIR/template.env" ]; then
+  die "unknown tenant role: $ROLE — the resolved registry ($(templates_source_desc)) defines: $(templates_roles "$REGISTRY_DIR" | tr '\n' ' ')— that is the whole of the resolved registry, and rig's own tree defines nothing beside it. A misconfigured RIG_TEMPLATES_REPO/_REF/_DIR looks exactly like this; check the source before the spelling." 2
+fi
+template_parse_env "$TPL_DIR/template.env" \
+  || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
+if [ "$TPL_AGENT" = "no" ] && \
+  { [ -e "$TPL_DIR/creds.md" ] || [ -L "$TPL_DIR/creds.md" ]; }; then
+  die "invalid definition for $ROLE in $(templates_source_desc) — creds.md is not allowed when AGENT=no" 2
 fi
 TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 
@@ -469,7 +452,7 @@ if [ "$TPL_AGENT" = "yes" ]; then
   # The definition's installer may change the login shell (claude-box changes
   # it to zsh), so converge and assert TMPDIR only after that installer ran.
   converge_tenant_tmpdir
-elif [ -n "$TPL_DIR" ] && [ -e "$TPL_DIR/install.sh" ]; then
+elif [ -e "$TPL_DIR/install.sh" ]; then
   log "running optional install hook (${ROLE}'s install.sh)"
   TENANT_USER="$TENANT_USER" TENANT_HOME="$TENANT_HOME" \
     TENANT_GROUP="$TENANT_GROUP" ROLE="$ROLE" \

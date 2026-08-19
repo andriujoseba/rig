@@ -36,9 +36,14 @@
 # newer templates by default (ruled 2026-07-24 on #110: pinned, not
 # main-tracked). RIG_TEMPLATES_REF overrides it per mint.
 #
-# Registry head reviewed and merged by rig-templates#4: the four agent tenants
-# plus the six machine-role definitions formerly carried in bootstrap.sh.
-RIG_TEMPLATES_PIN=47bb132c81b25658e5b5fb3c2f7d0f2fdb14100d
+# Registry head reviewed and merged by rig-templates#10 (closing
+# rig-templates#11): the four agent tenants, the six machine-role definitions
+# formerly carried in bootstrap.sh, and staging-box — the agentless, hardened
+# tenant whose arrival leaves rig's tree defining no role at all (#185). The MERGE commit,
+# not the merged PR's head: that repo merges with merge commits today, but a
+# switch to squash or rebase orphans the head, and only the commit on `main`
+# is a pin a fetch can always resolve.
+RIG_TEMPLATES_PIN=f77deae523112293320f29e1f8e5036257c6a685
 
 # The template.env schema. Grammar: blank lines, '#' comments, and
 # KEY="value" — nothing else. Parsed by regex, never sourced.
