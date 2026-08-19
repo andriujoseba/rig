@@ -36,6 +36,7 @@ Provide the short-lived REMOVAL token — not a registration token, they are
 different endpoints — via the RUNNER_REMOVE_TOKEN env var or the interactive
 prompt:
   gh api -X POST repos/<owner/repo>/actions/runners/remove-token
+  gh api -X POST orgs/<org>/actions/runners/remove-token
 It is consumed at deregistration and never written to disk by rig.
 
 --local is the escape hatch for when the registration is already gone
@@ -131,10 +132,19 @@ fi
 # working, not after the first two are gone.
 REMOVE_TOKEN=""
 NEEDS_TOKEN=0
+TOKEN_ENDPOINTS=""
 if [ "$LOCAL" -eq 0 ]; then
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    [ -e "$(printf '%s' "$line" | cut -f2)/.runner" ] && NEEDS_TOKEN=1
+    target_dir="$(printf '%s' "$line" | cut -f2)"
+    if [ -e "$target_dir/.runner" ]; then
+      NEEDS_TOKEN=1
+      endpoint="$(runner_token_endpoint "$(runner_repo_url "$target_dir")" remove-token)"
+      if [ -n "$endpoint" ] && ! printf '%s\n' "$TOKEN_ENDPOINTS" | grep -qxF "$endpoint"; then
+        TOKEN_ENDPOINTS="${TOKEN_ENDPOINTS}${endpoint}
+"
+      fi
+    fi
   done <<EOF
 $TARGETS
 EOF
@@ -145,8 +155,8 @@ if [ "$NEEDS_TOKEN" -eq 1 ]; then
   # message at all — the drill hit exactly this (wrong env var, exit 1, zero
   # output). Refuse loudly, naming both the variable and the tokenless out.
   if [ -z "$REMOVE_TOKEN" ]; then
-    [ -t 0 ] || die "RUNNER_REMOVE_TOKEN is unset and stdin is not a tty — set RUNNER_REMOVE_TOKEN to run unattended, or use --local"
-    read -rsp "runner removal token (short-lived): " REMOVE_TOKEN || { echo; die "no removal token read (EOF) — set RUNNER_REMOVE_TOKEN to run unattended, or use --local"; }
+    [ -t 0 ] || die "RUNNER_REMOVE_TOKEN is unset and stdin is not a tty — set RUNNER_REMOVE_TOKEN to run unattended, or use --local. Mint it with: gh api -X POST ${TOKEN_ENDPOINTS%%$'\n'*}"
+    read -rsp "runner removal token (short-lived; gh api -X POST ${TOKEN_ENDPOINTS%%$'\n'*}): " REMOVE_TOKEN || { echo; die "no removal token read (EOF) — set RUNNER_REMOVE_TOKEN to run unattended, or use --local"; }
     echo
   fi
   [ -n "$REMOVE_TOKEN" ] || die "empty removal token"
@@ -272,7 +282,7 @@ remove_one() { # remove_one <name> <dir> <unit>
         warn "a stale offline runner is still listed in the repo — delete it from Settings > Actions > Runners"
       fi
     else
-      log "  deregistering from GitHub"
+      log "  deregistering from GitHub ($(runner_token_endpoint "$(runner_repo_url "$dir")" remove-token))"
       if (cd "$dir" && runuser -u "$owner" -- env HOME="$owner_home" \
         ./config.sh remove --token "$REMOVE_TOKEN"); then
         dereg=1

@@ -1372,6 +1372,11 @@ fi
 check "bare runner shows usage, exit 2"  2 "usage:"          "$ROOT/bin/rig" runner
 check "runner: --help exits 0"           0 "usage:"          "$ROOT/commands/runner-install.sh" --help
 check "runner: repo required, exit 2"    2 "--repo"          "$ROOT/commands/runner-install.sh" --version 2.335.1
+check "runner: repo and org are exclusive" 2 "mutually exclusive" "$ROOT/commands/runner-install.sh" --repo acme/widgets --org acme
+check "runner: org needs value"          2 "needs a value"   "$ROOT/commands/runner-install.sh" --org
+check "runner: rejects bad org slug"     2 "organization name" "$ROOT/commands/runner-install.sh" --org acme/widgets
+check "runner: runnergroup needs org"    2 "only valid with --org" "$ROOT/commands/runner-install.sh" --repo acme/widgets --runnergroup Production
+check "runner: runnergroup needs value"  2 "needs a value"   "$ROOT/commands/runner-install.sh" --org acme --runnergroup
 check "runner: version needs value"      2 "needs a value"   "$ROOT/commands/runner-install.sh" --repo acme/widgets --version
 check "runner: repo needs value"         2 "needs a value"   "$ROOT/commands/runner-install.sh" --repo
 check "runner: rejects bad repo slug"    2 "owner/repo"      "$ROOT/commands/runner-install.sh" --repo not-a-slug --version 2.335.1
@@ -1602,6 +1607,8 @@ check "runner remove: unknown flag exits 2"  2 "unknown flag"     "$ROOT/command
 
 check "runner repoint: --help exits 0"       0 "usage:"           "$ROOT/commands/runner-repoint.sh" --help
 check "runner repoint: repo required"        2 "--repo"           "$ROOT/commands/runner-repoint.sh"
+check "runner repoint: repo and org are exclusive" 2 "mutually exclusive" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --org acme
+check "runner repoint: runnergroup needs org" 2 "only valid with --org" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --runnergroup Production
 check "runner repoint: repo needs value"     2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo
 check "runner repoint: rejects bad slug"     2 "owner/repo"       "$ROOT/commands/runner-repoint.sh" --repo not-a-slug
 check "runner repoint: labels need value"    2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --labels
@@ -2295,16 +2302,18 @@ SVC
   # registration, a register writes one naming the repo it was given.
   cat > "$d/config.sh" <<'CFG'
 #!/usr/bin/env bash
-printf 'config %s %s\n' "$1" "${PWD##*/}" >> "$SVC_LOG"
+printf 'config %s %s\n' "$*" "${PWD##*/}" >> "$SVC_LOG"
 if [ "$1" = remove ]; then rm -f ./.runner; exit 0; fi
-url=""; name=""
+url=""; name=""; group=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --url)  url="$2";  shift 2 ;;
     --name) name="$2"; shift 2 ;;
+    --runnergroup) group="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
+[ -z "$group" ] || printf '%s\n' "$group" > ./.seen-runner-group
 printf '{"agentId":7,"agentName":"%s","gitHubUrl":"%s","workFolder":"_work"}\n' \
   "$name" "$url" > ./.runner
 CFG
@@ -2417,6 +2426,46 @@ check "install after a rename: the name it answers to still converges it" \
   0 "already registered" install_run --repo acme/new --name fresh
 check "install after a rename: ...in the directory the rename left it in" \
   0 "" grep -qx 'svc start old' "$SVC_LOG"
+
+# #165: organization scope is per instance. New org registrations default to
+# GitHub's Default group and record all routing state beside the labels.
+mkmulti dormant
+check "install --org: a dormant instance registers to the organization" \
+  0 "installed and running" install_run --org acme --name taken
+check "install --org: passes GitHub's Default runner group to config.sh" \
+  0 "Default" cat "$BASE/taken/.seen-runner-group"
+check "install --org: records organization scope" \
+  0 "scope=org" cat "$BASE/taken/.rig-labels"
+check "install --org: records the group beside labels" \
+  0 "group=Default" cat "$BASE/taken/.rig-labels"
+
+# Repoint preserves an org runner's recorded group when no replacement is
+# named. Losing it silently changes which workflows can find the runner.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'scope=org\ngroup=Production\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint org→org: says the scope direction before it acts" \
+  0 "from organization acme (runner group Production) to organization beta (runner group Production)" \
+  repoint_run --org beta --name old --local
+check "repoint org→org: preserves the recorded runner group" \
+  0 "group=Production" cat "$BASE/old/.rig-labels"
+check "repoint org→org: forwards the preserved group to config.sh" \
+  0 "Production" cat "$BASE/old/.seen-runner-group"
+
+ORG_STATUS="$(mktemp)"
+env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+  SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" "$ROOT/commands/runner-status.sh" --name old \
+  > "$ORG_STATUS"
+check "status: prints organization scope" 0 "scope:   org" cat "$ORG_STATUS"
+check "status: prints an organization runner's group" 0 "group:   Production" cat "$ORG_STATUS"
+
+# remove does not mint a token, but it names and uses the endpoint matching the
+# runner's current scope so the supplied short-lived token comes from the org.
+check "remove: an org runner names the org remove-token endpoint" \
+  0 "orgs/beta/actions/runners/remove-token" \
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    RUNNER_REMOVE_TOKEN=removal-token "$ROOT/commands/runner-remove.sh" --name old
 FAKE_HOME=""
 
 # Round 4 of #174, @codex-bot-andresmgsl, executed end to end: a box running a

@@ -77,9 +77,21 @@ runner_repo_url() {
 runner_scope_from_url() {
   local target="${1#https://github.com/}"
   [ "$target" != "$1" ] || return 0
+  target="${target%/}"
   case "$target" in
     */*) printf 'repo' ;;
     ?*)  printf 'org' ;;
+  esac
+}
+
+# runner_token_endpoint <github-url> <registration-token|remove-token>
+runner_token_endpoint() {
+  local url="$1" kind="$2" target scope
+  target="${url#https://github.com/}"
+  scope="$(runner_scope_from_url "$url")"
+  case "$scope" in
+    repo) printf 'repos/%s/actions/runners/%s' "$target" "$kind" ;;
+    org)  printf 'orgs/%s/actions/runners/%s' "$target" "$kind" ;;
   esac
 }
 
@@ -91,7 +103,7 @@ runner_scope_from_url() {
 runner_record_value() {
   local file="$1/.rig-labels" key="$2"
   [ -r "$file" ] || return 0
-  if grep -qE '^(scope|group|labels)=' "$file"; then
+  if head -n1 "$file" | grep -q '^scope='; then
     sed -n "s/^${key}=//p" "$file" | head -n1
   elif [ "$key" = "labels" ]; then
     head -n1 "$file"
@@ -650,8 +662,8 @@ workflows can reach it. Move it explicitly:
   fi
 
   printf 'rig-runner: ERROR: %s\n' \
-"${subject} is already registered at ${current} (${current_scope:-scope unknown}),
-not ${target_words}. install will not move a runner across repository or
+"${subject} is already registered to ${current} (${current_scope:-scope unknown}),
+not ${wanted} (${target_words}). install will not move a runner across repository or
 organization scope: it would leave the service running against the OLD target
 and report success. To move it in one act:
   rig runner repoint --${scope} ${target}${select}

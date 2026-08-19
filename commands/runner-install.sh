@@ -115,6 +115,9 @@ if [ -n "$REPO" ] && [ "$RUNNER_GROUP" != "Default" ]; then
   die "--runnergroup is only valid with --org" 2
 fi
 [ -n "$RUNNER_GROUP" ] || die "--runnergroup must not be empty" 2
+case "${RUNNER_GROUP}${LABELS}" in
+  *$'\n'*|*$'\r'*) die "--runnergroup and --labels must each be one line" 2 ;;
+esac
 if [ -n "$ORG" ]; then
   SCOPE="org"; TARGET="$ORG"
 else
@@ -178,7 +181,11 @@ REG_PENDING=1
 if id -u "$RUNNER_USER" >/dev/null 2>&1; then
   USER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
   resolve_instance
-  assert_runner_target "$RUNNER_DIR" "$SCOPE" "$TARGET" "$RUNNER_GROUP" "$RUNNER_NAME" || exit 1
+  if [ "$SCOPE" = "repo" ]; then
+    assert_runner_repo "$RUNNER_DIR" "$TARGET" "$RUNNER_NAME" || exit 1
+  else
+    assert_runner_target "$RUNNER_DIR" "$SCOPE" "$TARGET" "$RUNNER_GROUP" "$RUNNER_NAME" || exit 1
+  fi
   if [ -e "$RUNNER_DIR/.runner" ]; then
     REG_PENDING=0
   fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rig runner repoint — move an installed runner from one repository to another.
+# rig runner repoint — move an installed runner across GitHub targets/scopes.
 # Deregister, then re-register against the new repo, reusing the binary that is
 # already on the box.
 #
@@ -19,9 +19,12 @@ die()  { printf 'rig-runner: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig runner repoint --repo <owner/repo> [options]
+usage: rig runner repoint (--repo <owner/repo> | --org <org>) [options]
 
-  --repo <owner/repo>   the repository to move the runner TO (required)
+  --repo <owner/repo>   move the runner to one repository
+  --org <org>           move the runner to an organization
+  --runnergroup <name>  organization runner group (default: preserve the
+                        recorded group, else Default)
   --name <name>         which runner to move; required when this box runs
                         more than one
   --rename <name>       give it a new name at the far end (default: keep the
@@ -33,9 +36,9 @@ usage: rig runner repoint --repo <owner/repo> [options]
                         (no removal token needed) — leaves a stale offline
                         runner listed there, to delete by hand
 
-Deregisters the runner from the repository it is on now and registers it
-against --repo. The runner binary, its user, and its systemd service are
-reused, so nothing is downloaded.
+Deregisters the runner from its current repository or organization and
+registers it against exactly one of --repo/--org. Crossing scopes is stated
+before anything is touched. The binary, user, and service are reused.
 
 WHICH RUNNER. With one runner on the box, --name is optional and that runner
 is the one. With several, its absence is refused with the list: moving one of
@@ -49,11 +52,13 @@ original directory behind.
 
 Two short-lived tokens, each minted from its OWN repository:
 
-  RUNNER_REMOVE_TOKEN   removal token, from the CURRENT repo (not needed
+  RUNNER_REMOVE_TOKEN   removal token, from the CURRENT target (not needed
                         with --local)
       gh api -X POST repos/<current>/actions/runners/remove-token
-  RUNNER_TOKEN          registration token, from the repo in --repo
+      gh api -X POST orgs/<current-org>/actions/runners/remove-token
+  RUNNER_TOKEN          registration token, from the target flag
       gh api -X POST repos/<new>/actions/runners/registration-token
+      gh api -X POST orgs/<new-org>/actions/runners/registration-token
 
 Either may be typed at the prompt instead. Both are collected BEFORE the
 runner is touched — a token you turn out not to have should fail while the
@@ -81,6 +86,9 @@ EOF
 
 # --- args (validated before the root check, so errors are testable) ---------
 REPO=""
+ORG=""
+RUNNER_GROUP=""
+RUNNER_GROUP_GIVEN=0
 WANT_NAME=""
 NEW_NAME=""
 LABELS=""
@@ -91,6 +99,12 @@ while [ $# -gt 0 ]; do
     --repo)
       [ $# -ge 2 ] || die "--repo needs a value" 2
       REPO="$2"; shift 2 ;;
+    --org)
+      [ $# -ge 2 ] || die "--org needs a value" 2
+      ORG="$2"; shift 2 ;;
+    --runnergroup)
+      [ $# -ge 2 ] || die "--runnergroup needs a value" 2
+      RUNNER_GROUP="$2"; RUNNER_GROUP_GIVEN=1; shift 2 ;;
     --name)
       [ $# -ge 2 ] || die "--name needs a value" 2
       WANT_NAME="$2"; shift 2 ;;
@@ -110,9 +124,22 @@ while [ $# -gt 0 ]; do
 done
 
 # --- validation ------------------------------------------------------------
-[ -n "$REPO" ] || die "--repo <owner/repo> is required" 2
-if ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+[ -z "$REPO" ] || [ -z "$ORG" ] || die "--repo and --org are mutually exclusive" 2
+[ -n "$REPO" ] || [ -n "$ORG" ] || die "exactly one of --repo <owner/repo> or --org <org> is required" 2
+if [ -n "$REPO" ] && ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
   die "--repo must be owner/repo" 2
+fi
+if [ -n "$ORG" ] && ! printf '%s' "$ORG" | grep -qE '^[A-Za-z0-9_.-]+$'; then
+  die "--org must be an organization name" 2
+fi
+if [ -n "$REPO" ] && [ "$RUNNER_GROUP_GIVEN" -eq 1 ]; then
+  die "--runnergroup is only valid with --org" 2
+fi
+[ "$RUNNER_GROUP_GIVEN" -eq 0 ] || [ -n "$RUNNER_GROUP" ] || die "--runnergroup must not be empty" 2
+if [ -n "$ORG" ]; then
+  TARGET_SCOPE="org"; TARGET="$ORG"
+else
+  TARGET_SCOPE="repo"; TARGET="$REPO"
 fi
 [ "$RUNNER_USER" != "root" ] || die "runner user must not be root" 2
 if [ -n "$NEW_NAME" ] && ! runner_valid_name "$NEW_NAME"; then
@@ -144,7 +171,7 @@ COUNT="$(runner_count "$INSTANCES")"
   || die "no runner on this box (nothing under ${BASE_DIR}, no actions.runner.* unit) — use: rig runner install"
 
 LINE="$(runner_select_instance "$WANT_NAME" "$INSTANCES" \
-"  rig runner repoint --repo ${REPO} --name <name>")" || exit 1
+"  rig runner repoint --${TARGET_SCOPE} ${TARGET} --name <name>")" || exit 1
 
 RUNNER_NAME="$(printf '%s' "$LINE" | cut -f1)"
 RUNNER_DIR="$(printf '%s' "$LINE" | cut -f2)"
@@ -165,7 +192,7 @@ would not move it: re-registering goes through rig runner install, which builds
 the instance in rig's layout and would leave ${RUNNER_DIR} behind.
 Do it as two explicit steps, and rig will own it afterwards:
   rig runner remove --name ${RUNNER_NAME}
-  rig runner install --repo ${REPO} --name ${RUNNER_NAME}"
+  rig runner install --${TARGET_SCOPE} ${TARGET} --name ${RUNNER_NAME}"
 fi
 
 # Ownership answered, reach is the other question (#174 round 4). The listing
@@ -187,7 +214,7 @@ if ! runner_dir_in_base "$BASE_DIR" "$RUNNER_DIR"; then
 it belongs to another service user, and repointing it as ${RUNNER_USER} would
 re-own its directory. Nothing has been touched.${OWNER:+
 Re-run it against the user that owns it:
-  rig runner repoint --repo ${REPO} --name ${RUNNER_NAME} --user ${OWNER}}"
+  rig runner repoint --${TARGET_SCOPE} ${TARGET} --name ${RUNNER_NAME} --user ${OWNER}}"
 fi
 
 # --- the name it will answer to afterwards -----------------------------------
@@ -235,20 +262,36 @@ fi
 
 # --- what is it registered to now? ------------------------------------------
 CURRENT_URL="$(runner_repo_url "$RUNNER_DIR")"
-TARGET_URL="https://github.com/${REPO}"
+CURRENT_SCOPE="$(runner_scope_from_url "$CURRENT_URL")"
+TARGET_URL="https://github.com/${TARGET}"
+RECORDED_GROUP="$(runner_record_value "$RUNNER_DIR" group)"
+if [ "$TARGET_SCOPE" = "org" ]; then
+  if [ "$RUNNER_GROUP_GIVEN" -eq 0 ]; then
+    if [ "$CURRENT_SCOPE" = "org" ] && [ -n "$RECORDED_GROUP" ]; then
+      RUNNER_GROUP="$RECORDED_GROUP"
+    else
+      RUNNER_GROUP="Default"
+    fi
+  fi
+else
+  RUNNER_GROUP=""
+fi
 
 # FINAL_NAME against RUNNER_NAME, not "was --rename passed": the flag asking
 # for the name the instance already has is not a change, and the help text
 # promises exactly that convergence. Testing the flag instead sent
 # `--rename solo` on the instance already called solo through the full
 # teardown — stop, uninstall, deregister — to re-register it as itself.
-if [ "$CURRENT_URL" = "$TARGET_URL" ] && [ "$FINAL_NAME" = "$RUNNER_NAME" ]; then
-  log "runner ${RUNNER_NAME} is already registered to ${REPO}; nothing to do"
+if [ "$CURRENT_URL" = "$TARGET_URL" ] && [ "$CURRENT_SCOPE" = "$TARGET_SCOPE" ] \
+  && [ "$FINAL_NAME" = "$RUNNER_NAME" ] \
+  && { [ "$TARGET_SCOPE" != "org" ] || [ -z "$RECORDED_GROUP" ] || [ "$RECORDED_GROUP" = "$RUNNER_GROUP" ]; }
+then
+  log "runner ${RUNNER_NAME} is already registered to ${TARGET_SCOPE} ${TARGET}; nothing to do"
   exit 0
 fi
 if [ -z "$LABELS" ]; then
-  if [ -r "$RUNNER_DIR/.rig-labels" ]; then
-    LABELS="$(cat "$RUNNER_DIR/.rig-labels")"
+  if [ -n "$(runner_record_value "$RUNNER_DIR" labels)" ]; then
+    LABELS="$(runner_record_value "$RUNNER_DIR" labels)"
   else
     LABELS="ci-runner"
     warn "this box has no rig label record (installed before rig kept one)"
@@ -257,7 +300,17 @@ if [ -z "$LABELS" ]; then
   fi
 fi
 
-log "moving runner ${RUNNER_NAME} (${RUNNER_DIR}) from ${CURRENT_URL} to ${TARGET_URL}"
+if [ "$CURRENT_SCOPE" = "org" ]; then
+  CURRENT_WORDS="organization ${CURRENT_URL#https://github.com/}${RECORDED_GROUP:+ (runner group ${RECORDED_GROUP})}"
+else
+  CURRENT_WORDS="repository ${CURRENT_URL#https://github.com/}"
+fi
+if [ "$TARGET_SCOPE" = "org" ]; then
+  TARGET_WORDS="organization ${TARGET} (runner group ${RUNNER_GROUP})"
+else
+  TARGET_WORDS="repository ${TARGET}"
+fi
+log "moving runner ${RUNNER_NAME} (${RUNNER_DIR}) from ${CURRENT_WORDS} to ${TARGET_WORDS}"
 [ "$FINAL_NAME" = "$RUNNER_NAME" ] || log "renaming it to ${FINAL_NAME}"
 log "labels: ${LABELS}"
 if [ "$COUNT" -gt 1 ]; then
@@ -306,11 +359,12 @@ if [ "$FINAL_NAME" != "$RUNNER_NAME" ]; then
   chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR/.rig-instance" 2>/dev/null || true
 fi
 
-if ! "$HERE/runner-install.sh" \
-  --repo "$REPO" --name "$FINAL_NAME" --labels "$LABELS" --user "$RUNNER_USER"
+INSTALL_ARGS=(--"$TARGET_SCOPE" "$TARGET" --name "$FINAL_NAME" --labels "$LABELS" --user "$RUNNER_USER")
+[ "$TARGET_SCOPE" != "org" ] || INSTALL_ARGS+=(--runnergroup "$RUNNER_GROUP")
+if ! "$HERE/runner-install.sh" "${INSTALL_ARGS[@]}"
 then
   warn "runner ${FINAL_NAME} is now deregistered from ${CURRENT_URL} and NOT registered anywhere"
-  die "re-registration failed — fix the cause, then run: rig runner install --repo ${REPO} --name ${FINAL_NAME} --labels ${LABELS} --user ${RUNNER_USER}"
+  die "re-registration failed — fix the cause, then run: rig runner install --${TARGET_SCOPE} ${TARGET} --name ${FINAL_NAME} --labels ${LABELS} --user ${RUNNER_USER}"
 fi
 
 log "runner ${FINAL_NAME} repointed to ${TARGET_URL}"

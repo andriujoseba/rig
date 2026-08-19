@@ -24,15 +24,16 @@ usage: rig runner status [--name <name>] [--user <name>]
   --name <name>   report one instance in detail (default: list them all)
   --user <name>   unprivileged service user (default: github-runner)
 
-With no --name, lists every runner on this box: name, repository, install
+With no --name, lists every runner on this box: name, registration scope and
+target, install
 directory, systemd unit and its state, and whether rig manages it. Instances
 are found both under the runner user's ~/actions-runner and by scanning
 systemd for actions.runner.* units, so a runner rig did not create is listed
 as `unmanaged` rather than left out.
 
-With --name, prints the detail view for that one instance: the repository it
-is registered to, its runner name, the labels rig recorded when it registered,
-the install directory, and the systemd unit and its state.
+With --name, prints the detail view for that one instance: its repository or
+organization scope, organization runner group when applicable, runner name,
+recorded labels, install directory, and systemd unit and state.
 
 Reads only the runners' own on-disk config — no GitHub token, no network
 call. Exits 1 when this box runs no runner at all, or when --name matches
@@ -85,16 +86,18 @@ fi
 
 # --- one instance in detail --------------------------------------------------
 detail() { # detail <name> <dir> <unit> <managed|unmanaged>
-  local name="$1" dir="$2" unit="$3" managed="$4" repo_url labels state service
+  local name="$1" dir="$2" unit="$3" managed="$4" target_url scope group labels state service
 
-  repo_url="$(runner_repo_url "$dir")"
+  target_url="$(runner_repo_url "$dir")"
+  scope="$(runner_scope_from_url "$target_url")"
+  group="$(runner_record_value "$dir" group)"
 
   # GitHub owns the labels; the runner does not persist them locally. rig
   # records what it registered with, so a box installed before this existed —
   # or a runner rig never touched — reports the honest answer rather than a
   # guess.
-  if [ -r "$dir/.rig-labels" ]; then
-    labels="$(cat "$dir/.rig-labels")"
+  if [ -n "$(runner_record_value "$dir" labels)" ]; then
+    labels="$(runner_record_value "$dir" labels)"
   else
     labels="(not recorded on this box — GitHub holds them; see the repo's Settings > Actions > Runners)"
   fi
@@ -107,7 +110,11 @@ detail() { # detail <name> <dir> <unit> <managed|unmanaged>
   fi
 
   log "name:    ${name}"
-  log "repo:    ${repo_url:-unknown}"
+  log "scope:   ${scope:-unknown}"
+  log "target:  ${target_url:-unknown}"
+  if [ "$scope" = "org" ]; then
+    log "group:   ${group:-(not recorded on this box — defaults to Default when repointed)}"
+  fi
   log "labels:  ${labels}"
   log "dir:     ${dir:-unknown}"
   log "service: ${service}"
@@ -150,7 +157,9 @@ printf '%s\n' "$INSTANCES" | while IFS= read -r LINE; do
   L_DIR="$(printf '%s' "$LINE" | cut -f2)"
   L_UNIT="$(printf '%s' "$LINE" | cut -f3)"
   L_MANAGED="$(printf '%s' "$LINE" | cut -f4)"
-  REPO_URL="$(runner_repo_url "$L_DIR")"
+  TARGET_URL="$(runner_repo_url "$L_DIR")"
+  SCOPE="$(runner_scope_from_url "$TARGET_URL")"
+  GROUP="$(runner_record_value "$L_DIR" group)"
   if [ -n "$L_UNIT" ]; then
     STATE="$(systemctl is-active "$L_UNIT" 2>/dev/null || true)"
     SERVICE="${L_UNIT} (${STATE:-unknown})"
@@ -158,7 +167,9 @@ printf '%s\n' "$INSTANCES" | while IFS= read -r LINE; do
     SERVICE="(not installed as a service)"
   fi
   log "  ${L_NAME}  [${L_MANAGED}]"
-  log "    repo:    ${REPO_URL:-unknown}"
+  log "    scope:   ${SCOPE:-unknown}"
+  log "    target:  ${TARGET_URL:-unknown}"
+  [ "$SCOPE" != "org" ] || log "    group:   ${GROUP:-(not recorded; Default on repoint)}"
   log "    dir:     ${L_DIR:-unknown}"
   log "    service: ${SERVICE}"
 done
