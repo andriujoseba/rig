@@ -263,8 +263,12 @@ fi
 # --- what is it registered to now? ------------------------------------------
 CURRENT_URL="$(runner_repo_url "$RUNNER_DIR")"
 CURRENT_SCOPE="$(runner_scope_from_url "$CURRENT_URL")"
+RECORDED_SCOPE="$(runner_record_value "$RUNNER_DIR" scope)"
 TARGET_URL="https://github.com/${TARGET}"
 RECORDED_GROUP="$(runner_record_value "$RUNNER_DIR" group)"
+if [ -n "$RECORDED_SCOPE" ] && [ "$RECORDED_SCOPE" != "$CURRENT_SCOPE" ]; then
+  warn "recorded scope is ${RECORDED_SCOPE}, but the runner config says ${CURRENT_SCOPE}; using the runner config"
+fi
 if [ "$TARGET_SCOPE" = "org" ]; then
   if [ "$RUNNER_GROUP_GIVEN" -eq 0 ]; then
     if [ "$CURRENT_SCOPE" = "org" ] && [ -n "$RECORDED_GROUP" ]; then
@@ -364,7 +368,9 @@ INSTALL_ARGS=(--"$TARGET_SCOPE" "$TARGET" --name "$FINAL_NAME" --labels "$LABELS
 if ! "$HERE/runner-install.sh" "${INSTALL_ARGS[@]}"
 then
   warn "runner ${FINAL_NAME} is now deregistered from ${CURRENT_URL} and NOT registered anywhere"
-  die "re-registration failed — fix the cause, then run: rig runner install --${TARGET_SCOPE} ${TARGET} --name ${FINAL_NAME} --labels ${LABELS} --user ${RUNNER_USER}"
+  RECOVERY_GROUP=""
+  [ "$TARGET_SCOPE" != "org" ] || RECOVERY_GROUP=" --runnergroup ${RUNNER_GROUP}"
+  die "re-registration failed — fix the cause, then run: rig runner install --${TARGET_SCOPE} ${TARGET}${RECOVERY_GROUP} --name ${FINAL_NAME} --labels ${LABELS} --user ${RUNNER_USER}"
 fi
 
 log "runner ${FINAL_NAME} repointed to ${TARGET_URL}"

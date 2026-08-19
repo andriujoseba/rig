@@ -2315,6 +2315,7 @@ SVC
 #!/usr/bin/env bash
 printf 'config %s %s\n' "$*" "${PWD##*/}" >> "$SVC_LOG"
 if [ "$1" = remove ]; then rm -f ./.runner; exit 0; fi
+[ -z "${CONFIG_FAIL:-}" ] || exit 1
 url=""; name=""; group=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -2352,6 +2353,12 @@ repoint_run() {
 repoint_bare() {
   env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
     SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+repoint_fail() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" CONFIG_FAIL=1 \
+    RUNNER_REMOVE_TOKEN=removal-token RUNNER_TOKEN=registration-token \
     "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
 }
 
@@ -2477,6 +2484,15 @@ check "remove: an org runner names the org remove-token endpoint" \
   env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
     SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
     RUNNER_REMOVE_TOKEN=removal-token "$ROOT/commands/runner-remove.sh" --name old
+
+# If the far-end registration fails after teardown, the recovery command must
+# carry the group too; omitting it silently moves the runner to Default.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'scope=org\ngroup=Production\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint org→org: failed registration recovery preserves the group" \
+  1 "rig runner install --org beta --runnergroup Production" \
+  repoint_fail --org beta --name old --local
 FAKE_HOME=""
 
 # Round 4 of #174, @codex-bot-andresmgsl, executed end to end: a box running a
