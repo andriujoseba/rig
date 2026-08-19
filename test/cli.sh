@@ -12,13 +12,15 @@ BOOT_TPL_FIX="$(mktemp -d)"
 mkdir -p \
   "$BOOT_TPL_FIX/control-plane-server" "$BOOT_TPL_FIX/workload-server" \
   "$BOOT_TPL_FIX/runner-server" "$BOOT_TPL_FIX/staging-server" \
-  "$BOOT_TPL_FIX/dev-server" "$BOOT_TPL_FIX/workstation"
+  "$BOOT_TPL_FIX/dev-server" "$BOOT_TPL_FIX/workstation" \
+  "$BOOT_TPL_FIX/staging-box"
 printf '# control-plane-server — control-plane fleet machine traits ported from\n# rig'\''s bootstrap table in rig#154.\nROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/control-plane-server/template.env"
 printf '# workload-server — workload fleet machine traits ported from rig'\''s\n# bootstrap table in rig#154.\nROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/workload-server/template.env"
 printf '# runner-server — runner fleet machine traits ported from rig'\''s bootstrap\n# table in rig#154.\nROOT_DOOR="open"\nHOST="no"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/runner-server/template.env"
 printf '# staging-server — the unattended VM host. HOST="yes" installs the box CLI\n# and runs box'\''s setup-host; this is the role'\''s defining trait, not machinery.\nROOT_DOOR="open"\nHOST="yes"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/staging-server/template.env"
 printf '# dev-server — interactive development fleet machine traits ported from\n# rig'\''s bootstrap table in rig#154.\nROOT_DOOR="closed"\nHOST="yes"\nJOIN="authkey"\n' > "$BOOT_TPL_FIX/dev-server/template.env"
 printf '# workstation — joins by interactive login so it remains user-owned and\n# untagged; no pre-auth key is used or stored.\nROOT_DOOR="closed"\nHOST="yes"\nJOIN="login"\n' > "$BOOT_TPL_FIX/workstation/template.env"
+printf '# staging-box — box#69 server tenant; the credentialed join stays operator-run.\nUSER="ops"\nAGENT="no"\nHARDEN_SSHD="yes"\n' > "$BOOT_TPL_FIX/staging-box/template.env"
 export RIG_TEMPLATES_DIR="$BOOT_TPL_FIX"
 
 BOOT_NO_NET="$(mktemp -d)"
@@ -707,6 +709,27 @@ mkdir -p "$TPL_FIX/badnode-box"
 printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nNEEDS_NODE="maybe"\n' > "$TPL_FIX/badnode-box/template.env"
 mkdir -p "$TPL_FIX/badapt-box"
 printf 'USER="x"\nCONTEXT_PATH=".x/A.md"\nCLI_NAME="x"\nPATH_LINE="p"\nAPT_EXTRAS="zsh -o"\n' > "$TPL_FIX/badapt-box/template.env"
+mkdir -p "$TPL_FIX/badagent-box"
+printf 'USER="x"\nAGENT="maybe"\n' > "$TPL_FIX/badagent-box/template.env"
+mkdir -p "$TPL_FIX/badharden-box"
+printf 'USER="x"\nAGENT="no"\nHARDEN_SSHD="maybe"\n' > "$TPL_FIX/badharden-box/template.env"
+mkdir -p "$TPL_FIX/noagentkey-box"
+printf 'USER="x"\nAGENT="no"\nPATH_LINE="p"\n' > "$TPL_FIX/noagentkey-box/template.env"
+mkdir -p "$TPL_FIX/noagentcreds-box"
+printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcreds-box/template.env"
+printf 'not allowed\n' > "$TPL_FIX/noagentcreds-box/creds.md"
+mkdir -p "$TPL_FIX/noagentcredsdir-box/creds.md"
+printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcredsdir-box/template.env"
+mkdir -p "$TPL_FIX/noagentcredssymlink-box"
+printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcredssymlink-box/template.env"
+ln -s missing-target "$TPL_FIX/noagentcredssymlink-box/creds.md"
+mkdir -p "$TPL_FIX/noagenthook-box"
+printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagenthook-box/template.env"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TPL_FIX/noagenthook-box/install.sh"
+mkdir -p "$TPL_FIX/hardenedagent-box"
+cp "$TPL_FIX/scratch-box/template.env" "$TPL_FIX/scratch-box/install.sh" \
+  "$TPL_FIX/scratch-box/creds.md" "$TPL_FIX/hardenedagent-box/"
+printf 'HARDEN_SSHD="yes"\n' >> "$TPL_FIX/hardenedagent-box/template.env"
 mkdir -p "$TPL_FIX/scratch-server"
 printf 'ROOT_DOOR="closed"\nHOST="no"\nJOIN="login"\n' > "$TPL_FIX/scratch-server/template.env"
 mkdir -p "$TPL_FIX/baddoor-server"
@@ -721,6 +744,14 @@ printf 'not used\n' > "$TPL_FIX/creds-server/creds.md"
 mkdir -p "$TPL_FIX/noshebang-server"
 cp "$TPL_FIX/scratch-server/template.env" "$TPL_FIX/noshebang-server/template.env"
 printf 'exit 0\n' > "$TPL_FIX/noshebang-server/install.sh"
+
+tenant_schema_tuple() {
+  bash -c '. "$1/commands/lib/templates.sh"; template_parse_env "$2/template.env"; printf "%s/%s/%s" "$TPL_USER" "$TPL_AGENT" "$TPL_HARDEN_SSHD"' _ "$ROOT" "$1"
+}
+check "tenant schema: old definitions default to agent=yes, harden=no" 0 "scratch/yes/no" \
+  tenant_schema_tuple "$TPL_FIX/scratch-box"
+check "tenant schema: staging data selects ops/no-agent/hardening" 0 "ops/no/yes" \
+  tenant_schema_tuple "$BOOT_TPL_FIX/staging-box"
 
 # THE HARD CUT, tenant half (#76). The pre-rename names are gone and must fail
 # as UNKNOWN — asserted per name, because an alias left in for one tenant is the
@@ -1021,8 +1052,8 @@ check "machine template: the registry owns workstation's traits" 2 "unset TS_AUT
 # because whoever hits it has the halves confused: the guest (staging-box), the metal
 # (staging-server). An agent tenant refuses ANY machine-role box; staging-box
 # tolerates exactly the workload-joined guest (root-door=open host=no) and refuses the
-# rest. These need no registry: the guards run before the resolution, so a
-# poisoning converge is refused even when the registry is unreachable.
+# rest. Registry definitions are resolved first because AGENT is the policy
+# input; staging-box carries the same tuple in its temporary in-tree fallback.
 TEN_FIX="$(mktemp -d)"
 printf 'role=workload-server root-door=open host=no join=authkey\n' > "$TEN_FIX/machine"
 printf 'role=custom root-door=closed host=no join=authkey\n'        > "$TEN_FIX/closed"
@@ -1031,27 +1062,48 @@ printf 'role=workload class=server\n'                               > "$TEN_FIX/
 printf 'role=dev class=human\n'                                     > "$TEN_FIX/pre77-human"
 printf 'role=claude-box tenant=yes host=no\n'                  > "$TEN_FIX/tenant"
 check "tenant: staging-box refuses a closed-door machine box" 1 "root door is not open" \
-  env RIG_ROLE_MARKER="$TEN_FIX/closed" "$ROOT/commands/bootstrap-tenant.sh" staging-box
+  env RIG_ROLE_MARKER="$TEN_FIX/closed" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" staging-box
 check "tenant: refuses a host=yes box (a VM host is never a guest)" 1 "hosts VMs" \
-  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" claude-box
-check "tenant: the host refusal sends you to the metal half of the pair" 1 "staging-server" \
-  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" staging-box
-check "tenant: an agent role refuses a machine-role box" 1 "never tailnet machines" \
-  env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" claude-box
+  env RIG_ROLE_MARKER="$TEN_FIX/host" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" scratch-box
+check "tenant: the host refusal names machine-role bootstrap" 1 "machine role" \
+  env RIG_ROLE_MARKER="$TEN_FIX/host" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" staging-box
+check "tenant: the host marker refuses with the registry unreachable" 1 "hosts VMs" \
+  env RIG_ROLE_MARKER="$TEN_FIX/host" RIG_TEMPLATES_DIR=/nonexistent/registry \
+  "$ROOT/commands/bootstrap-tenant.sh" scratch-box
+check "tenant: an agent role refuses a machine-role box" 1 "only an agentless, hardened" \
+  env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" scratch-box
+check "tenant: AGENT=no alone does not tolerate a machine-role box" 1 "only an agentless, hardened" \
+  env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagenthook-box
 # The tenant guard's compat read (#77). This guard asks "does this marker name
 # a root-door policy?" through the resolver, so the pre-#77 spelling counts —
 # pattern-matching one spelling would fail OPEN here: the marker stops looking
 # like a machine's, the refusal never fires, and a tenant converge clobbers a
 # live fleet box's marker.
-check "tenant: an agent role refuses a PRE-#77 machine marker" 1 "never tailnet machines" \
-  env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" "$ROOT/commands/bootstrap-tenant.sh" claude-box
+check "tenant: an agent role refuses a PRE-#77 machine marker" 1 "only an agentless, hardened" \
+  env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" scratch-box
 check "tenant: staging-box refuses a PRE-#77 closed-door machine box" 1 "root door is not open" \
-  env RIG_ROLE_MARKER="$TEN_FIX/pre77-human" "$ROOT/commands/bootstrap-tenant.sh" staging-box
-# ...and the guard needs no registry: an unreachable RIG_TEMPLATES_DIR must
-# not stop a refusal that protects a live fleet box.
-check "tenant: the marker guard fires even with the registry unreachable" 1 "never tailnet machines" \
+  env RIG_ROLE_MARKER="$TEN_FIX/pre77-human" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" staging-box
+# The schema is the marker-policy input, so an unreadable registry refuses
+# before policy can be inferred rather than guessing from a role name.
+check "tenant: marker policy refuses an unreadable registry" 2 "not a directory" \
   env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR=/nonexistent/registry \
   "$ROOT/commands/bootstrap-tenant.sh" claude-box
+check "tenant: AGENT=no refuses creds.md at mint time" 2 "creds.md is not allowed when AGENT=no" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagentcreds-box
+check "tenant: AGENT=no refuses a non-file creds.md path at mint time" 2 "creds.md is not allowed when AGENT=no" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagentcredsdir-box
+check "tenant: AGENT=no refuses a dangling creds.md symlink at mint time" 2 "creds.md is not allowed when AGENT=no" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagentcredssymlink-box
 
 # The definition surface (#110), offline via RIG_TEMPLATES_DIR. An unknown
 # role's refusal LISTS what the resolved source actually contains and names
@@ -1090,6 +1142,15 @@ check "tenant: a bad NEEDS_NODE value is refused by key" 2 "NEEDS_NODE" \
 check "tenant: an option riding APT_EXTRAS is refused by key" 2 "APT_EXTRAS" \
   env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" badapt-box
+check "tenant: an invalid AGENT value is refused by key" 2 "AGENT" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" badagent-box
+check "tenant: an invalid HARDEN_SSHD value is refused by key" 2 "HARDEN_SSHD" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" badharden-box
+check "tenant: AGENT=no refuses PATH_LINE by key" 2 "PATH_LINE" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagentkey-box
 if [ "$(id -u)" -ne 0 ]; then
   # RIG_ROLE_MARKER pinned to the absent fixture: the marker guard runs before
   # the root check, and the harness machine may carry a real /etc/rig/role.
@@ -1098,15 +1159,17 @@ if [ "$(id -u)" -ne 0 ]; then
   check "tenant: a valid definition parses, refuses non-root" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
     "$ROOT/commands/bootstrap-tenant.sh" scratch-box
-  check "tenant: staging-box needs no registry at all" 1 "must run as root" \
+  check "tenant: staging-box compatibility fallback needs no registry" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR=/nonexistent/registry \
     "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: staging-box tolerates a workload-joined guest's marker" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" staging-box
+    env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
+    "$ROOT/commands/bootstrap-tenant.sh" staging-box
   # ...and the same guest joined before #77: reaching the root check (rather
   # than a marker refusal) is what proves the tolerance survived the rename.
   check "tenant: staging-box tolerates a PRE-#77 workload-joined guest" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" "$ROOT/commands/bootstrap-tenant.sh" staging-box
+    env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
+    "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: a tenant marker re-runs fine (convergence)" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/tenant" RIG_TEMPLATES_DIR="$TPL_FIX" \
     "$ROOT/commands/bootstrap-tenant.sh" scratch-box
@@ -1238,6 +1301,18 @@ check "template-lint: dispatched from bin/rig" 0 "usage:" "$ROOT/bin/rig" templa
 check "template-lint: a valid definition passes" 0 "OK: " "$ROOT/commands/template-lint.sh" "$TPL_FIX/scratch-box"
 check "template-lint: an unknown key fails by name" 1 "unknown key: COLOR" \
   "$ROOT/commands/template-lint.sh" "$TPL_FIX/badkey-box"
+check "template-lint: AGENT=no needs no agent files" 0 "OK: " \
+  "$ROOT/commands/template-lint.sh" "$BOOT_TPL_FIX/staging-box"
+check "template-lint: AGENT=no may carry install.sh" 0 "OK: " \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noagenthook-box"
+check "template-lint: AGENT=no refuses agent keys" 1 "PATH_LINE" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noagentkey-box"
+check "template-lint: AGENT=no refuses creds.md" 1 "creds.md is not allowed" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noagentcreds-box"
+check "template-lint: AGENT=no refuses a dangling creds.md symlink" 1 "creds.md is not allowed" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noagentcredssymlink-box"
+check "template-lint: HARDEN_SSHD is orthogonal to an agent" 0 "OK: " \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/hardenedagent-box"
 check "template-lint: one bad definition fails the whole run" 1 "FAIL: " \
   "$ROOT/commands/template-lint.sh" "$TPL_FIX/scratch-box" "$TPL_FIX/badkey-box"
 mkdir -p "$TPL_FIX/plain"
@@ -1282,6 +1357,23 @@ check "machine template: install failure names role and source" 0 "" \
 # shellcheck disable=SC2016
 check "machine template: install runs from its definition with RIG_ROLE" 0 "" \
   grep -qF 'cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" bash ./install.sh' "$ROOT/commands/bootstrap.sh"
+tenant_hook_block="$TPL_WORK/tenant-optional-install-hook"
+sed -n '/running optional install hook/,/^fi$/p' "$ROOT/commands/bootstrap-tenant.sh" > "$tenant_hook_block"
+# Dynamic execution belongs to the root integration path. Pin the optional
+# agentless hook's identity, invocation and failure contract here so the final
+# staging-box rewrite cannot silently drop it.
+# shellcheck disable=SC2016
+check "tenant template: optional install hook carries user identity" 0 "" \
+  grep -qF 'TENANT_USER="$TENANT_USER" TENANT_HOME="$TENANT_HOME"' "$tenant_hook_block"
+# shellcheck disable=SC2016
+check "tenant template: optional install hook carries group and role" 0 "" \
+  grep -qF 'TENANT_GROUP="$TENANT_GROUP" ROLE="$ROLE"' "$tenant_hook_block"
+# shellcheck disable=SC2016
+check "tenant template: optional install runs from its definition" 0 "" \
+  grep -qF 'bash "$TPL_DIR/install.sh"' "$tenant_hook_block"
+# shellcheck disable=SC2016
+check "tenant template: optional install failure names role and source" 0 "" \
+  grep -qF '${ROLE}'"'"'s install.sh failed — the definition is $(templates_source_desc)' "$tenant_hook_block"
 rm -rf "$BOOT_TPL_FIX" "$BOOT_NO_NET" "$TPL_FIX" "$TPL_WORK"
 
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
@@ -1305,10 +1397,22 @@ check "templates lib: the parser READS template.env line by line" 0 "" \
   grep -qF 'while IFS= read -r line' "$ROOT/commands/lib/templates.sh"
 check "templates lib: template.env is never sourced" 1 "" \
   grep -nE '(source|^[[:space:]]*\.)[[:space:]]+[^#]*template\.env' "$ROOT/commands/lib/templates.sh" "$ROOT/commands/bootstrap-tenant.sh"
-# staging-box's posture rides the SAME hardening code as the machine roles — the
-# shared lib call is the anti-drift property, so pin the call, not the words.
-check "tenant: staging-box hardens through the shared sshd lib" 0 "" \
+# Server posture rides the SAME hardening code as the machine roles — the
+# shared lib call is the anti-drift property, gated only by definition data.
+# shellcheck disable=SC2016
+check "tenant: HARDEN_SSHD invokes the shared sshd lib" 0 "" \
+  grep -qF 'if [ "$TPL_HARDEN_SSHD" = "yes" ]; then' "$ROOT/commands/bootstrap-tenant.sh"
+# shellcheck disable=SC2016
+check "tenant: hardening runs through the shared sshd lib" 0 "" \
   grep -qE '^[[:space:]]*harden_sshd open$' "$ROOT/commands/bootstrap-tenant.sh"
+# shellcheck disable=SC2016
+check "tenant: HARDEN_SSHD installs sshd for agent tenants too" 0 "" \
+  grep -qE 'apt-get install .*cron openssh-server.*\$TPL_APT_EXTRAS' "$ROOT/commands/bootstrap-tenant.sh"
+# The dependency-safe split keeps exactly one compatibility definition until
+# the registry PR can merge against this schema; the final #155 PR removes it.
+# shellcheck disable=SC2016
+check "tenant: staging-box compatibility tuple selects no-agent hardening" 0 "" \
+  grep -qF 'TPL_AGENT="no"' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: docker lands via docker's own installer" 0 "" \
   grep -q "get.docker.com" "$ROOT/commands/bootstrap-tenant.sh"
 # The #15 lesson pinned: 'box exec' shells read no rc files, so the CLI must
