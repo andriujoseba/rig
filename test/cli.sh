@@ -1065,6 +1065,9 @@ check "tenant: refuses a host=yes box (a VM host is never a guest)" 1 "hosts VMs
 check "tenant: the host refusal names machine-role bootstrap" 1 "machine role" \
   env RIG_ROLE_MARKER="$TEN_FIX/host" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" staging-box
+check "tenant: the host marker refuses with the registry unreachable" 1 "hosts VMs" \
+  env RIG_ROLE_MARKER="$TEN_FIX/host" RIG_TEMPLATES_DIR=/nonexistent/registry \
+  "$ROOT/commands/bootstrap-tenant.sh" scratch-box
 check "tenant: an agent role refuses a machine-role box" 1 "only an agentless, hardened" \
   env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" scratch-box
@@ -1087,6 +1090,9 @@ check "tenant: staging-box refuses a PRE-#77 closed-door machine box" 1 "root do
 check "tenant: marker policy refuses an unreadable registry" 2 "not a directory" \
   env RIG_ROLE_MARKER="$TEN_FIX/machine" RIG_TEMPLATES_DIR=/nonexistent/registry \
   "$ROOT/commands/bootstrap-tenant.sh" claude-box
+check "tenant: AGENT=no refuses creds.md at mint time" 2 "creds.md is not allowed when AGENT=no" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagentcreds-box
 
 # The definition surface (#110), offline via RIG_TEMPLATES_DIR. An unknown
 # role's refusal LISTS what the resolved source actually contains and names
@@ -1366,6 +1372,9 @@ check "templates lib: template.env is never sourced" 1 "" \
 # shellcheck disable=SC2016
 check "tenant: HARDEN_SSHD invokes the shared sshd lib" 0 "" \
   grep -qF 'if [ "$TPL_HARDEN_SSHD" = "yes" ]; then' "$ROOT/commands/bootstrap-tenant.sh"
+# shellcheck disable=SC2016
+check "tenant: hardening runs through the shared sshd lib" 0 "" \
+  grep -qE '^[[:space:]]*harden_sshd open$' "$ROOT/commands/bootstrap-tenant.sh"
 # shellcheck disable=SC2016
 check "tenant: HARDEN_SSHD installs sshd for agent tenants too" 0 "" \
   grep -qE 'apt-get install .*cron openssh-server.*\$TPL_APT_EXTRAS' "$ROOT/commands/bootstrap-tenant.sh"

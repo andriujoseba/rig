@@ -122,6 +122,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# A host marker is an unconditional refusal: a tenant converges a guest, never
+# the metal hosting it. Keep this check ahead of registry resolution so the
+# diagnostic remains available even when the registry is unreachable (#110).
+MARKER_PATH="${RIG_ROLE_MARKER:-/etc/rig/role}"
+EXISTING_MARKER="$(read_role_marker "$MARKER_PATH")"
+case "$EXISTING_MARKER" in
+  *host=yes*)
+    die "this box hosts VMs (${EXISTING_MARKER}) — a tenant role converges box GUESTS, never the host under them. Bootstrap the metal with a machine role, not a registry tenant." ;;
+esac
+
 # --- the definition ----------------------------------------------------------
 # Resolved and parsed before marker policy: whether a tenant carries an agent
 # and whether it hardens sshd are definition facts. staging-box spells the
@@ -149,6 +159,9 @@ else
   fi
   template_parse_env "$TPL_DIR/template.env" \
     || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
+  if [ "$TPL_AGENT" = "no" ] && [ -f "$TPL_DIR/creds.md" ]; then
+    die "invalid definition for $ROLE in $(templates_source_desc) — creds.md is not allowed when AGENT=no" 2
+  fi
 fi
 TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 
@@ -157,9 +170,9 @@ TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 # marker is a tailnet machine rig built on purpose, and quietly turning it into
 # a tenant (or clobbering its marker) is how a fleet box gets poisoned. Checked
 # BEFORE the root check so the refusals are testable non-root, off fixture
-# markers (repo precedent: the coolify marker warning). Two refusals, one
-# tolerance:
-#   - host=yes  → refuse, every tenant: a VM HOST is the opposite of a guest.
+# markers (repo precedent: the coolify marker warning). The unconditional
+# host=yes refusal already ran before registry resolution. What remains is one
+# definition-driven refusal and one tolerance:
 #   - a root-door policy (agent tenants) → refuse: an agent box is never a
 #     tailnet machine.
 #   - root-door=open with host=no (agentless tenants) → PROCEED, and leave the
@@ -176,13 +189,7 @@ TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 # dangerous direction: every box bootstrapped in the OTHER vocabulary stops
 # looking like a machine, the refusals below never fire, and a tenant converge
 # clobbers a real fleet box's marker. The resolver is the only reader.
-MARKER_PATH="${RIG_ROLE_MARKER:-/etc/rig/role}"
-EXISTING_MARKER="$(read_role_marker "$MARKER_PATH")"
 EXISTING_ROOT_DOOR="$(root_door_of "$EXISTING_MARKER")"
-case "$EXISTING_MARKER" in
-  *host=yes*)
-    die "this box hosts VMs (${EXISTING_MARKER}) — a tenant role converges box GUESTS, never the host under them. Bootstrap the metal with a machine role, not a registry tenant." ;;
-esac
 if [ -n "$EXISTING_ROOT_DOOR" ]; then
   if [ "$TPL_AGENT" = "yes" ] || [ "$TPL_HARDEN_SSHD" != "yes" ]; then
     die "this box already carries a machine role (${EXISTING_MARKER}) — only an agentless, hardened server tenant may re-converge a workload-joined guest. If this really is the requested guest, remove ${MARKER_PATH} and re-run."
