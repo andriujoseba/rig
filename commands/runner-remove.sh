@@ -151,12 +151,15 @@ EOF
 fi
 if [ "$NEEDS_TOKEN" -eq 1 ]; then
   REMOVE_TOKEN="${RUNNER_REMOVE_TOKEN:-}"
+  TOKEN_COMMANDS="$(printf '%s' "$TOKEN_ENDPOINTS" | sed '/^$/d; s|^|  gh api -X POST |')"
   # Prompt only on a tty: headless, a bare `read` dies under set -e with no
   # message at all — the drill hit exactly this (wrong env var, exit 1, zero
   # output). Refuse loudly, naming both the variable and the tokenless out.
   if [ -z "$REMOVE_TOKEN" ]; then
-    [ -t 0 ] || die "RUNNER_REMOVE_TOKEN is unset and stdin is not a tty — set RUNNER_REMOVE_TOKEN to run unattended, or use --local. Mint it with: gh api -X POST ${TOKEN_ENDPOINTS%%$'\n'*}"
-    read -rsp "runner removal token (short-lived; gh api -X POST ${TOKEN_ENDPOINTS%%$'\n'*}): " REMOVE_TOKEN || { echo; die "no removal token read (EOF) — set RUNNER_REMOVE_TOKEN to run unattended, or use --local"; }
+    [ -t 0 ] || die "RUNNER_REMOVE_TOKEN is unset and stdin is not a tty — set RUNNER_REMOVE_TOKEN to run unattended, or use --local. Mint it from the endpoint matching each runner being removed:
+${TOKEN_COMMANDS}"
+    printf 'runner removal token (short-lived; matching endpoint):\n%s\n' "$TOKEN_COMMANDS" >&2
+    read -rsp "token: " REMOVE_TOKEN || { echo; die "no removal token read (EOF) — set RUNNER_REMOVE_TOKEN to run unattended, or use --local"; }
     echo
   fi
   [ -n "$REMOVE_TOKEN" ] || die "empty removal token"

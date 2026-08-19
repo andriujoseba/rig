@@ -69,6 +69,7 @@ EOF
 REPO=""
 ORG=""
 RUNNER_GROUP="Default"
+RUNNER_GROUP_GIVEN=0
 VERSION=""
 RUNNER_NAME="$(hostname)"
 NAME_GIVEN=0
@@ -84,7 +85,7 @@ while [ $# -gt 0 ]; do
       ORG="$2"; shift 2 ;;
     --runnergroup)
       [ $# -ge 2 ] || die "--runnergroup needs a value" 2
-      RUNNER_GROUP="$2"; shift 2 ;;
+      RUNNER_GROUP="$2"; RUNNER_GROUP_GIVEN=1; shift 2 ;;
     --version)
       [ $# -ge 2 ] || die "--version needs a value" 2
       VERSION="$2"; shift 2 ;;
@@ -111,7 +112,7 @@ fi
 if [ -n "$ORG" ] && ! printf '%s' "$ORG" | grep -qE '^[A-Za-z0-9_.-]+$'; then
   die "--org must be an organization name" 2
 fi
-if [ -n "$REPO" ] && [ "$RUNNER_GROUP" != "Default" ]; then
+if [ -n "$REPO" ] && [ "$RUNNER_GROUP_GIVEN" -eq 1 ]; then
   die "--runnergroup is only valid with --org" 2
 fi
 [ -n "$RUNNER_GROUP" ] || die "--runnergroup must not be empty" 2
@@ -155,10 +156,10 @@ command -v curl >/dev/null || die "curl is required (run rig bootstrap first)"
 
 # --- which instance is this, and is it already registered elsewhere? ----------
 # Before anything is prompted for, downloaded, or started: the instance --name
-# selects must agree with --repo. Everything below this point treats an
+# selects must agree with the requested target. Everything below this point treats an
 # existing .runner as "nothing to do" — which is right for the repo that
 # instance is already on, and silently wrong for any other. See
-# assert_runner_repo.
+# assert_runner_target.
 #
 # resolve_instance sets RUNNER_DIR, and may correct RUNNER_NAME when it adopts
 # a legacy install. It needs USER_HOME, so it runs once here when the user is
@@ -181,11 +182,7 @@ REG_PENDING=1
 if id -u "$RUNNER_USER" >/dev/null 2>&1; then
   USER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
   resolve_instance
-  if [ "$SCOPE" = "repo" ]; then
-    assert_runner_repo "$RUNNER_DIR" "$TARGET" "$RUNNER_NAME" || exit 1
-  else
-    assert_runner_target "$RUNNER_DIR" "$SCOPE" "$TARGET" "$RUNNER_GROUP" "$RUNNER_NAME" || exit 1
-  fi
+  assert_runner_target "$RUNNER_DIR" "$SCOPE" "$TARGET" "$RUNNER_GROUP" "$RUNNER_NAME" || exit 1
   if [ -e "$RUNNER_DIR/.runner" ]; then
     REG_PENDING=0
   fi

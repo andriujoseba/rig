@@ -1370,12 +1370,17 @@ else
 fi
 
 check "bare runner shows usage, exit 2"  2 "usage:"          "$ROOT/bin/rig" runner
+check "rig help: advertises organization runner install" 0 "runner install (--repo <owner/repo> | --org <org>)" "$ROOT/bin/rig" --help
+check "rig help: advertises organization runner groups" 0 "Organization runners accept --runnergroup" "$ROOT/bin/rig" --help
+check "rig help: status names scope, target and group" 0 "scope, target, group" "$ROOT/bin/rig" --help
+check "rig help: advertises cross-scope repoint" 0 "runner repoint (--repo <owner/repo> | --org <org>)" "$ROOT/bin/rig" --help
 check "runner: --help exits 0"           0 "usage:"          "$ROOT/commands/runner-install.sh" --help
 check "runner: repo required, exit 2"    2 "--repo"          "$ROOT/commands/runner-install.sh" --version 2.335.1
 check "runner: repo and org are exclusive" 2 "mutually exclusive" "$ROOT/commands/runner-install.sh" --repo acme/widgets --org acme
 check "runner: org needs value"          2 "needs a value"   "$ROOT/commands/runner-install.sh" --org
 check "runner: rejects bad org slug"     2 "organization name" "$ROOT/commands/runner-install.sh" --org acme/widgets
 check "runner: runnergroup needs org"    2 "only valid with --org" "$ROOT/commands/runner-install.sh" --repo acme/widgets --runnergroup Production
+check "runner: explicit Default runnergroup still needs org" 2 "only valid with --org" "$ROOT/commands/runner-install.sh" --repo acme/widgets --runnergroup Default
 check "runner: runnergroup needs value"  2 "needs a value"   "$ROOT/commands/runner-install.sh" --org acme --runnergroup
 check "runner: version needs value"      2 "needs a value"   "$ROOT/commands/runner-install.sh" --repo acme/widgets --version
 check "runner: repo needs value"         2 "needs a value"   "$ROOT/commands/runner-install.sh" --repo
@@ -1597,13 +1602,13 @@ rm -f "$FIX_TAGGED" "$FIX_UNTAGGED" "$FIX_NESTED"
 # The guard is only worth something if it runs BEFORE the box is touched: the
 # token prompt, the download, configure and svc.sh start all come after it.
 # Ordering is the whole fix, so assert it rather than trust it.
-# Matches the CALL, not the word: the comment above it mentions assert_runner_repo
+# Matches the CALL, not the word: the comment above it mentions assert_runner_target
 # too, and a plain grep would keep finding that after the call itself was deleted.
 # The defaults fail closed, so a guard that is gone cannot read as one that merely
 # sits early in the file.
-guard_at="$(grep -nE '^[[:space:]]*assert_runner_repo ' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
+guard_at="$(grep -nE '^[[:space:]]*assert_runner_target ' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
 start_at="$(grep -n 'svc.sh start' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
-check "runner install: the repo guard precedes svc.sh start" \
+check "runner install: the target guard precedes svc.sh start" \
   0 "" test "${guard_at:-999999}" -lt "${start_at:-0}"
 
 check "runner status: --help exits 0"        0 "usage:"           "$ROOT/commands/runner-status.sh" --help
@@ -1620,11 +1625,22 @@ check "runner repoint: --help exits 0"       0 "usage:"           "$ROOT/command
 check "runner repoint: repo required"        2 "--repo"           "$ROOT/commands/runner-repoint.sh"
 check "runner repoint: repo and org are exclusive" 2 "mutually exclusive" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --org acme
 check "runner repoint: runnergroup needs org" 2 "only valid with --org" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --runnergroup Production
+check "runner repoint: rejects multiline runnergroup before root or teardown" \
+  2 "must each be one line" "$ROOT/commands/runner-repoint.sh" --org acme --runnergroup $'Production\nscope=repo'
+check "runner repoint: rejects multiline labels before root or teardown" \
+  2 "must each be one line" "$ROOT/commands/runner-repoint.sh" --org acme --labels $'linux\nscope=repo'
 check "runner repoint: repo needs value"     2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo
 check "runner repoint: rejects bad slug"     2 "owner/repo"       "$ROOT/commands/runner-repoint.sh" --repo not-a-slug
 check "runner repoint: labels need value"    2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --labels
 check "runner repoint: refuses --user root"  2 "must not be root" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --user root
 check "runner repoint: unknown flag exits 2" 2 "unknown flag"     "$ROOT/commands/runner-repoint.sh" --nope
+repoint_validation_at="$(grep -n 'must each be one line' "$ROOT/commands/runner-repoint.sh" | head -n1 | cut -d: -f1)"
+repoint_remove_at="$(grep -n 'runner-remove.sh' "$ROOT/commands/runner-repoint.sh" | tail -n1 | cut -d: -f1)"
+repoint_install_at="$(grep -n 'runner-install.sh' "$ROOT/commands/runner-repoint.sh" | tail -n1 | cut -d: -f1)"
+check "runner repoint: one-line validation precedes removal" \
+  0 "" test "${repoint_validation_at:-999999}" -lt "${repoint_remove_at:-0}"
+check "runner repoint: one-line validation precedes registration" \
+  0 "" test "${repoint_validation_at:-999999}" -lt "${repoint_install_at:-0}"
 if [ "$(id -u)" -ne 0 ]; then
   check "runner status: refuses non-root"  1 "must run as root" "$ROOT/commands/runner-status.sh"
   check "runner remove: refuses non-root"  1 "must run as root" \
@@ -2457,6 +2473,50 @@ check "install --org: records organization scope" \
 check "install --org: records the group beside labels" \
   0 "group=Default" cat "$BASE/taken/.rig-labels"
 
+# The trust-boundary criterion is cross-scope, so exercise both directions
+# through the full offline lifecycle rather than only tracing the branches.
+mkmulti registered
+check "repoint repo→org: announces the scope direction before teardown" \
+  0 "from repository acme/alpha to organization beta (runner group Default)" \
+  repoint_run --org beta --name old --local
+check "repoint repo→org: records organization scope and Default group" \
+  0 $'scope=org\ngroup=Default' cat "$BASE/old/.rig-labels"
+check "repoint repo→org: preserves labels" \
+  0 "labels=self-hosted,linux" cat "$BASE/old/.rig-labels"
+check "repoint repo→org: forwards Default to config.sh" \
+  0 "Default" cat "$BASE/old/.seen-runner-group"
+check "repoint repo→org: registers the organization URL" \
+  0 '"gitHubUrl":"https://github.com/beta"' cat "$BASE/old/.runner"
+
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'scope=org\ngroup=Production\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint org→repo: announces the scope direction before teardown" \
+  0 "from organization acme (runner group Production) to repository beta/gamma" \
+  repoint_run --repo beta/gamma --name old --local
+check "repoint org→repo: records repository scope and no group" \
+  0 $'scope=repo\ngroup=' cat "$BASE/old/.rig-labels"
+check "repoint org→repo: preserves labels" \
+  0 "labels=self-hosted,linux" cat "$BASE/old/.rig-labels"
+check "repoint org→repo: does not forward a runner group" \
+  1 "" test -e "$BASE/old/.seen-runner-group"
+check "repoint org→repo: registers the repository URL" \
+  0 '"gitHubUrl":"https://github.com/beta/gamma"' cat "$BASE/old/.runner"
+
+# A missing group record is legacy/hand-deleted state. An explicit group is a
+# requested change even when the URL already matches; it must not converge it
+# away as if no group had been supplied.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'scope=org\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint same org: explicit group repairs a missing group record" \
+  0 "repointed to https://github.com/acme" \
+  repoint_run --org acme --runnergroup Production --name old --local
+check "repoint same org: records the explicit repaired group" \
+  0 "group=Production" cat "$BASE/old/.rig-labels"
+check "repoint same org: forwards the explicit repaired group" \
+  0 "Production" cat "$BASE/old/.seen-runner-group"
+
 # Repoint preserves an org runner's recorded group when no replacement is
 # named. Losing it silently changes which workflows can find the runner.
 mkmulti registered
@@ -2477,13 +2537,31 @@ env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LO
 check "status: prints organization scope" 0 "scope:   org" cat "$ORG_STATUS"
 check "status: prints an organization runner's group" 0 "group:   Production" cat "$ORG_STATUS"
 
+# remove --all may span repository and organization scopes. Before asking for
+# a token, its refusal must name every endpoint the operator will need rather
+# than silently showing only the first runner's scope.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/beta#' "$BASE/taken/.runner"
+printf 'scope=org\ngroup=Default\nlabels=self-hosted,linux\n' > "$BASE/taken/.rig-labels"
+remove_bare() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    "$ROOT/commands/runner-remove.sh" --all </dev/null
+}
+check "remove --all mixed scopes: names the repository token endpoint" \
+  1 "repos/acme/alpha/actions/runners/remove-token" remove_bare
+check "remove --all mixed scopes: names the organization token endpoint" \
+  1 "orgs/beta/actions/runners/remove-token" remove_bare
+check "remove --all mixed scopes: refuses before touching either service" \
+  1 "" test -s "$SVC_LOG"
+
 # remove does not mint a token, but it names and uses the endpoint matching the
 # runner's current scope so the supplied short-lived token comes from the org.
 check "remove: an org runner names the org remove-token endpoint" \
   0 "orgs/beta/actions/runners/remove-token" \
   env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
     SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
-    RUNNER_REMOVE_TOKEN=removal-token "$ROOT/commands/runner-remove.sh" --name old
+    RUNNER_REMOVE_TOKEN=removal-token "$ROOT/commands/runner-remove.sh" --name taken
 
 # If the far-end registration fails after teardown, the recovery command must
 # carry the group too; omitting it silently moves the runner to Default.

@@ -136,6 +136,9 @@ if [ -n "$REPO" ] && [ "$RUNNER_GROUP_GIVEN" -eq 1 ]; then
   die "--runnergroup is only valid with --org" 2
 fi
 [ "$RUNNER_GROUP_GIVEN" -eq 0 ] || [ -n "$RUNNER_GROUP" ] || die "--runnergroup must not be empty" 2
+case "${RUNNER_GROUP}${LABELS}" in
+  *$'\n'*|*$'\r'*) die "--runnergroup and --labels must each be one line" 2 ;;
+esac
 if [ -n "$ORG" ]; then
   TARGET_SCOPE="org"; TARGET="$ORG"
 else
@@ -288,7 +291,9 @@ fi
 # teardown — stop, uninstall, deregister — to re-register it as itself.
 if [ "$CURRENT_URL" = "$TARGET_URL" ] && [ "$CURRENT_SCOPE" = "$TARGET_SCOPE" ] \
   && [ "$FINAL_NAME" = "$RUNNER_NAME" ] \
-  && { [ "$TARGET_SCOPE" != "org" ] || [ -z "$RECORDED_GROUP" ] || [ "$RECORDED_GROUP" = "$RUNNER_GROUP" ]; }
+  && { [ "$TARGET_SCOPE" != "org" ] \
+    || { [ -z "$RECORDED_GROUP" ] && [ "$RUNNER_GROUP_GIVEN" -eq 0 ]; } \
+    || [ "$RECORDED_GROUP" = "$RUNNER_GROUP" ]; }
 then
   log "runner ${RUNNER_NAME} is already registered to ${TARGET_SCOPE} ${TARGET}; nothing to do"
   exit 0

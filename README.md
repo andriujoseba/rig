@@ -983,7 +983,7 @@ unit, no re-registration, nothing re-downloaded. Omit `--name` there and
 `install` converges the runner the box already has, exactly as it did before.
 Pass a name and you get a second instance beside it.
 
-### `rig runner install --repo <owner/repo> [--name <name>]`
+### `rig runner install (--repo <owner/repo> | --org <org>) [--name <name>]`
 
 Runner box only, run after `rig bootstrap runner-server` (the same two-step rhythm
 as `bootstrap control-plane-server` → `coolify install`):
@@ -1053,7 +1053,7 @@ the same repository or organization re-uses the binary, skips registration,
 and never asks for a token. A different target, runner group, or repo↔org
 scope change **refuses** and names both sides: widening one repo to a whole
 organization is a trust-boundary act, not convergence. That move belongs to
-[`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo---name-name).
+[`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo--org-org-name-name).
 Running a *second* runner beside it is this command with a new `--name`, and
 the refusal says so.
 
@@ -1064,7 +1064,7 @@ would report success.
 A name whose *directory* holds a runner that answers to something else is
 refused for the same reason, one door along. Two boxes reach that state: a
 hand-rolled `~github-runner/actions-runner/mine` registered as `other`, and one
-where [`repoint --rename`](#rig-runner-repoint---repo-ownerrepo---name-name)
+where [`repoint --rename`](#rig-runner-repoint---repo-ownerrepo--org-org-name-name)
 moved the identity and left the directory — `<base>/old` answering to `fresh`.
 Installing into either would adopt the runner already there rather than create
 the one you asked for. The refusal names what the directory answers to, which
@@ -1155,7 +1155,7 @@ gets its turn and the failures are carried out in the exit status.
 
 Convergent — a box with no runner installed exits 0.
 
-### `rig runner repoint --repo <owner/repo> [--name <name>]`
+### `rig runner repoint (--repo <owner/repo> | --org <org>) [--name <name>]`
 
 ```sh
 rig runner repoint --repo acme/widgets                            # the one runner
@@ -1213,14 +1213,15 @@ prints the exact `runner install` line that finishes the job.
 
 > **Labels and runner groups do not survive a move on their own.** GitHub holds
 > them; the runner does not persist them locally. rig records labels, scope and
-> group together, so `repoint` and `status` can read them back — but a runner installed before rig
-> did that has nothing to read, and `repoint` falls back to the `ci-runner`
+> group together, so `repoint` and `status` can read them back — but a runner
+> installed before rig did that has nothing to read, and `repoint` falls back
+> to the `ci-runner`
 > default and warns loudly before it touches anything. Labels are what
 > `runs-on` matches, so a silent change there is a workflow that simply stops
 > finding its runner. Pass `--labels` if yours differ.
 
-Convergent — repointing to the same scope, target and group changes nothing, exits 0,
-and never asks for a token, unless `--rename` asks for a change: that is a
+Convergent — repointing to the same scope, target and group changes nothing,
+exits 0 and never asks for a token, unless `--rename` asks for a change: that is a
 re-registration and needs both tokens. `--rename` naming the name the instance
 already has is not a change, and converges with the rest.
 
