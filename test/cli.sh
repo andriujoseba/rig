@@ -718,6 +718,8 @@ printf 'USER="x"\nAGENT="no"\nPATH_LINE="p"\n' > "$TPL_FIX/noagentkey-box/templa
 mkdir -p "$TPL_FIX/noagentcreds-box"
 printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcreds-box/template.env"
 printf 'not allowed\n' > "$TPL_FIX/noagentcreds-box/creds.md"
+mkdir -p "$TPL_FIX/noagentcredsdir-box/creds.md"
+printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcredsdir-box/template.env"
 mkdir -p "$TPL_FIX/noagenthook-box"
 printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagenthook-box/template.env"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TPL_FIX/noagenthook-box/install.sh"
@@ -1093,6 +1095,9 @@ check "tenant: marker policy refuses an unreadable registry" 2 "not a directory"
 check "tenant: AGENT=no refuses creds.md at mint time" 2 "creds.md is not allowed when AGENT=no" \
   env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" noagentcreds-box
+check "tenant: AGENT=no refuses a non-file creds.md path at mint time" 2 "creds.md is not allowed when AGENT=no" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagentcredsdir-box
 
 # The definition surface (#110), offline via RIG_TEMPLATES_DIR. An unknown
 # role's refusal LISTS what the resolved source actually contains and names
@@ -1344,6 +1349,23 @@ check "machine template: install failure names role and source" 0 "" \
 # shellcheck disable=SC2016
 check "machine template: install runs from its definition with RIG_ROLE" 0 "" \
   grep -qF 'cd "$MACHINE_TEMPLATE_DIR" && RIG_ROLE="$ROLE" bash ./install.sh' "$ROOT/commands/bootstrap.sh"
+tenant_hook_block="$TPL_WORK/tenant-optional-install-hook"
+sed -n '/running optional install hook/,/^fi$/p' "$ROOT/commands/bootstrap-tenant.sh" > "$tenant_hook_block"
+# Dynamic execution belongs to the root integration path. Pin the optional
+# agentless hook's identity, invocation and failure contract here so the final
+# staging-box rewrite cannot silently drop it.
+# shellcheck disable=SC2016
+check "tenant template: optional install hook carries user identity" 0 "" \
+  grep -qF 'TENANT_USER="$TENANT_USER" TENANT_HOME="$TENANT_HOME"' "$tenant_hook_block"
+# shellcheck disable=SC2016
+check "tenant template: optional install hook carries group and role" 0 "" \
+  grep -qF 'TENANT_GROUP="$TENANT_GROUP" ROLE="$ROLE"' "$tenant_hook_block"
+# shellcheck disable=SC2016
+check "tenant template: optional install runs from its definition" 0 "" \
+  grep -qF 'bash "$TPL_DIR/install.sh"' "$tenant_hook_block"
+# shellcheck disable=SC2016
+check "tenant template: optional install failure names role and source" 0 "" \
+  grep -qF '${ROLE}'"'"'s install.sh failed — the definition is $(templates_source_desc)' "$tenant_hook_block"
 rm -rf "$BOOT_TPL_FIX" "$BOOT_NO_NET" "$TPL_FIX" "$TPL_WORK"
 
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal

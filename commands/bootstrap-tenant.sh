@@ -159,7 +159,7 @@ else
   fi
   template_parse_env "$TPL_DIR/template.env" \
     || die "invalid definition for $ROLE in $(templates_source_desc) — the failing key is named above. The registry's CI lints every PR ('rig template-lint'); a malformed definition reaching a mint means the source above was never linted." 2
-  if [ "$TPL_AGENT" = "no" ] && [ -f "$TPL_DIR/creds.md" ]; then
+  if [ "$TPL_AGENT" = "no" ] && [ -e "$TPL_DIR/creds.md" ]; then
     die "invalid definition for $ROLE in $(templates_source_desc) — creds.md is not allowed when AGENT=no" 2
   fi
 fi
