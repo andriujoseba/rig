@@ -720,6 +720,9 @@ printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcreds-box/template.env"
 printf 'not allowed\n' > "$TPL_FIX/noagentcreds-box/creds.md"
 mkdir -p "$TPL_FIX/noagentcredsdir-box/creds.md"
 printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcredsdir-box/template.env"
+mkdir -p "$TPL_FIX/noagentcredssymlink-box"
+printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagentcredssymlink-box/template.env"
+ln -s missing-target "$TPL_FIX/noagentcredssymlink-box/creds.md"
 mkdir -p "$TPL_FIX/noagenthook-box"
 printf 'USER="x"\nAGENT="no"\n' > "$TPL_FIX/noagenthook-box/template.env"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TPL_FIX/noagenthook-box/install.sh"
@@ -1098,6 +1101,9 @@ check "tenant: AGENT=no refuses creds.md at mint time" 2 "creds.md is not allowe
 check "tenant: AGENT=no refuses a non-file creds.md path at mint time" 2 "creds.md is not allowed when AGENT=no" \
   env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
   "$ROOT/commands/bootstrap-tenant.sh" noagentcredsdir-box
+check "tenant: AGENT=no refuses a dangling creds.md symlink at mint time" 2 "creds.md is not allowed when AGENT=no" \
+  env RIG_ROLE_MARKER="$TEN_FIX/absent" RIG_TEMPLATES_DIR="$TPL_FIX" \
+  "$ROOT/commands/bootstrap-tenant.sh" noagentcredssymlink-box
 
 # The definition surface (#110), offline via RIG_TEMPLATES_DIR. An unknown
 # role's refusal LISTS what the resolved source actually contains and names
@@ -1303,6 +1309,8 @@ check "template-lint: AGENT=no refuses agent keys" 1 "PATH_LINE" \
   "$ROOT/commands/template-lint.sh" "$TPL_FIX/noagentkey-box"
 check "template-lint: AGENT=no refuses creds.md" 1 "creds.md is not allowed" \
   "$ROOT/commands/template-lint.sh" "$TPL_FIX/noagentcreds-box"
+check "template-lint: AGENT=no refuses a dangling creds.md symlink" 1 "creds.md is not allowed" \
+  "$ROOT/commands/template-lint.sh" "$TPL_FIX/noagentcredssymlink-box"
 check "template-lint: HARDEN_SSHD is orthogonal to an agent" 0 "OK: " \
   "$ROOT/commands/template-lint.sh" "$TPL_FIX/hardenedagent-box"
 check "template-lint: one bad definition fails the whole run" 1 "FAIL: " \

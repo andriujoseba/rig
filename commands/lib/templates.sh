@@ -399,7 +399,7 @@ template_lint() {
       grep -q '[^[:space:]]' "$dir/creds.md" 2>/dev/null \
         || { printf '%s: creds.md missing or blank (the context renderer splices it in — a blank paragraph would ship a context file with a hole)\n' "$role" >&2; return 1; }
     else
-      [ ! -e "$dir/creds.md" ] \
+      { [ ! -e "$dir/creds.md" ] && [ ! -L "$dir/creds.md" ]; } \
         || { printf '%s: creds.md is not allowed when AGENT=no\n' "$role" >&2; return 1; }
       if [ -e "$dir/install.sh" ]; then
         [ -s "$dir/install.sh" ] \
