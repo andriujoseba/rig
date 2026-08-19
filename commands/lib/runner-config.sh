@@ -72,6 +72,54 @@ runner_repo_url() {
   json_field "$1/.runner" gitHubUrl
 }
 
+# runner_scope_from_url <github-url> — repo|org when the runner target has one
+# of GitHub's two supported registration shapes, empty when it cannot be read.
+runner_scope_from_url() {
+  local target="${1#https://github.com/}"
+  [ "$target" != "$1" ] || return 0
+  target="${target%/}"
+  case "$target" in
+    */*) printf 'repo' ;;
+    ?*)  printf 'org' ;;
+  esac
+}
+
+# runner_token_endpoint <github-url> <registration-token|remove-token>
+runner_token_endpoint() {
+  local url="$1" kind="$2" target scope
+  target="${url#https://github.com/}"
+  scope="$(runner_scope_from_url "$url")"
+  case "$scope" in
+    repo) printf 'repos/%s/actions/runners/%s' "$target" "$kind" ;;
+    org)  printf 'orgs/%s/actions/runners/%s' "$target" "$kind" ;;
+  esac
+}
+
+# runner_record_value <runner_dir> <scope|group|labels>
+#
+# New registrations carry a format marker followed by all three fields in
+# .rig-labels. The marker is not enough on its own: a pre-#165 file may contain
+# ANY legal one-line label value, including the marker itself. Requiring a
+# second, scope-shaped line keeps every one-line legacy record unambiguous.
+# Legacy files remain readable as labels and say nothing about scope or group,
+# which are therefore reported honestly as unrecorded.
+runner_record_value() {
+  local file="$1/.rig-labels" key="$2"
+  [ -r "$file" ] || return 0
+  if [ "$(sed -n '1p' "$file")" = "format=rig-runner-state-v1" ] \
+    && sed -n '2p' "$file" | grep -qE '^scope=(repo|org)$'; then
+    sed -n "s/^${key}=//p" "$file" | head -n1
+  elif [ "$key" = "labels" ]; then
+    head -n1 "$file"
+  fi
+}
+
+# runner_write_record <runner_dir> <scope> <group> <labels>
+runner_write_record() {
+  printf 'format=rig-runner-state-v1\nscope=%s\ngroup=%s\nlabels=%s\n' \
+    "$2" "$3" "$4" > "$1/.rig-labels"
+}
+
 # runner_agent_name <runner_dir> — the runner's name, empty when unregistered.
 runner_agent_name() {
   [ -e "$1/.runner" ] || return 0
@@ -559,29 +607,36 @@ ${hint}" >&2
   return 1
 }
 
-# assert_runner_repo <runner_dir> <owner/repo> [instance_name]
+# assert_runner_target <runner_dir> <repo|org> <target> <group> [instance_name]
 #
 # Returns 0 when the INSTANCE in <runner_dir> has no runner, or has one already
-# registered to <owner/repo>: re-running `install` against the repo that
-# instance is already on is real convergence — it re-uses the binary, skips
-# registration, exits 0.
+# registered to the same scope, target and (when recorded) organization group:
+# real convergence re-uses the binary, skips registration, and exits 0.
 #
 # Returns 1, explaining itself on stderr, when the instance is registered to a
-# DIFFERENT repo. Skipping *that* is not convergence, it is ignoring the
+# DIFFERENT target. Skipping *that* is not convergence, it is ignoring the
 # argument: `install` would skip its configure step, restart the service on the
-# OLD repo, and report success — leaving the repo you asked for with no runner
-# and its jobs queued against one that will never come. Moving a runner between
-# repos is a trust-boundary act, so it belongs to `repoint`, out loud.
+# OLD target, and report success — leaving the target you asked for with no
+# runner and its jobs queued against one that will never come. Moving a runner
+# between scopes is a trust-boundary act, so it belongs to `repoint`, out loud.
 #
 # Scoped to one instance since #166: on a box running four, "this box's runner"
 # named a thing that does not exist. The name is optional so the guard keeps
 # working on a dir whose instance has no recorded name.
-assert_runner_repo() {
-  local dir="$1" repo="$2" name="${3:-}" current wanted subject select
+assert_runner_target() {
+  local dir="$1" scope="$2" target="$3" group="$4" name="${5:-}"
+  local current wanted subject select current_scope recorded_group target_words
   [ -e "$dir/.runner" ] || return 0
 
   current="$(runner_repo_url "$dir")"
-  wanted="https://github.com/${repo}"
+  wanted="https://github.com/${target}"
+  current_scope="$(runner_scope_from_url "$current")"
+  recorded_group="$(runner_record_value "$dir" group)"
+  if [ "$scope" = "org" ]; then
+    target_words="organization ${target} (runner group ${group})"
+  else
+    target_words="repository ${target}"
+  fi
   if [ -n "$name" ]; then
     subject="runner ${name}"
     select=" --name ${name}"
@@ -599,20 +654,36 @@ Wipe the local registration and install again:
     return 1
   fi
 
-  if [ "$current" = "$wanted" ]; then
-    return 0
+  if [ "$current" = "$wanted" ] && [ "$current_scope" = "$scope" ]; then
+    if [ "$scope" != "org" ] || [ -z "$recorded_group" ] || [ "$recorded_group" = "$group" ]; then
+      return 0
+    fi
+    printf 'rig-runner: ERROR: %s\n' \
+"${subject} is already registered to organization ${target} in runner group
+${recorded_group}, not ${group}. install will not silently change which
+workflows can reach it. Move it explicitly:
+  rig runner repoint --org ${target} --runnergroup ${group}${select}" >&2
+    return 1
   fi
 
   printf 'rig-runner: ERROR: %s\n' \
-"${subject} is already registered to ${current}, not ${wanted}.
-install will not move a runner between repositories: it would leave the service
-running against the OLD repo and report success. To move it in one act:
-  rig runner repoint --repo ${repo}${select}
-or take it off the old repo first, then install:
+"${subject} is already registered to ${current} (${current_scope:-scope unknown}),
+not ${wanted} (${target_words}). install will not move a runner across repository or
+organization scope: it would leave the service running against the OLD target
+and report success. To move it in one act:
+  rig runner repoint --${scope} ${target}${select}
+or take it off the old target first, then install:
   rig runner remove${select}             (deregisters from ${current}; needs a removal token)
   rig runner remove --local${select}     (when you cannot mint one)
 To run a SECOND runner here instead of moving this one, give the new one its
 own name:
-  rig runner install --repo ${repo} --name <name>" >&2
+  rig runner install --${scope} ${target} --name <name>" >&2
   return 1
+}
+
+
+# Backward-compatible sourceable helper used by the offline harness and by
+# scripts outside this repository that adopted the old shared guard.
+assert_runner_repo() {
+  assert_runner_target "$1" repo "$2" "" "${3:-}"
 }

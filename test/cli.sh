@@ -1370,8 +1370,22 @@ else
 fi
 
 check "bare runner shows usage, exit 2"  2 "usage:"          "$ROOT/bin/rig" runner
+check "rig help: advertises organization runner install" 0 "runner install (--repo <owner/repo> | --org <org>)" "$ROOT/bin/rig" --help
+check "rig help: advertises organization runner groups" 0 "Organization runners accept --runnergroup" "$ROOT/bin/rig" --help
+check "rig help: status names scope, target and group" 0 "scope, target, group" "$ROOT/bin/rig" --help
+check "rig help: advertises cross-scope repoint" 0 "runner repoint (--repo <owner/repo> | --org <org>)" "$ROOT/bin/rig" --help
 check "runner: --help exits 0"           0 "usage:"          "$ROOT/commands/runner-install.sh" --help
 check "runner: repo required, exit 2"    2 "--repo"          "$ROOT/commands/runner-install.sh" --version 2.335.1
+check "runner: repo and org are exclusive" 2 "mutually exclusive" "$ROOT/commands/runner-install.sh" --repo acme/widgets --org acme
+check "runner: org needs value"          2 "needs a value"   "$ROOT/commands/runner-install.sh" --org
+check "runner: rejects bad org slug"     2 "organization name" "$ROOT/commands/runner-install.sh" --org acme/widgets
+check "runner: runnergroup needs org"    2 "only valid with --org" "$ROOT/commands/runner-install.sh" --repo acme/widgets --runnergroup Production
+check "runner: explicit Default runnergroup still needs org" 2 "only valid with --org" "$ROOT/commands/runner-install.sh" --repo acme/widgets --runnergroup Default
+check "runner: runnergroup needs value"  2 "needs a value"   "$ROOT/commands/runner-install.sh" --org acme --runnergroup
+check "runner: rejects multiline runnergroup before root or mutation" \
+  2 "must each be one line" "$ROOT/commands/runner-install.sh" --org acme --runnergroup $'Production\nscope=repo'
+check "runner: rejects multiline labels before root or mutation" \
+  2 "must each be one line" "$ROOT/commands/runner-install.sh" --org acme --labels $'linux\nscope=repo'
 check "runner: version needs value"      2 "needs a value"   "$ROOT/commands/runner-install.sh" --repo acme/widgets --version
 check "runner: repo needs value"         2 "needs a value"   "$ROOT/commands/runner-install.sh" --repo
 check "runner: rejects bad repo slug"    2 "owner/repo"      "$ROOT/commands/runner-install.sh" --repo not-a-slug --version 2.335.1
@@ -1441,6 +1455,16 @@ guard() { # guard <runner_dir> <owner/repo>
     . "$1/commands/lib/runner-config.sh"
     assert_runner_repo "$2" "$3"' _ "$ROOT" "$1" "$2"
 }
+target_guard() { # target_guard <runner_dir> <repo|org> <target> <group>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    assert_runner_target "$2" "$3" "$4" "$5"' _ "$ROOT" "$1" "$2" "$3" "$4"
+}
+record_value() { # record_value <runner_dir> <scope|group|labels>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    runner_record_value "$2" "$3"' _ "$ROOT" "$1" "$2"
+}
 REG_DIR="$(mktemp -d)"    # a box registered to acme/alpha
 EMPTY_DIR="$(mktemp -d)"  # a box with no runner at all
 printf '%s\n' '{"agentId":7,"agentName":"ci-box","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' \
@@ -1452,6 +1476,12 @@ check "runner install: the refusal names the repo that was asked for" \
   1 "not https://github.com/acme/beta" guard "$REG_DIR" acme/beta
 check "runner install: the refusal points at repoint" \
   1 "rig runner repoint --repo acme/beta" guard "$REG_DIR" acme/beta
+check "runner install: repo→org refuses as a scope change" \
+  1 "(repo)" target_guard "$REG_DIR" org acme Default
+check "runner install: repo→org refusal names the organization and group" \
+  1 "organization acme (runner group Default)" target_guard "$REG_DIR" org acme Default
+check "runner install: repo→org refusal points at an explicit repoint" \
+  1 "rig runner repoint --org acme" target_guard "$REG_DIR" org acme Default
 # Convergence is the property worth keeping: same repo stays a clean no-op.
 check "runner install: the repo it is already on is a no-op" \
   0 "" guard "$REG_DIR" acme/alpha
@@ -1461,6 +1491,11 @@ check "runner install: an unregistered box passes the guard" \
 printf '%s\n' '{"agentName":"ci-box"}' > "$REG_DIR/.runner"
 check "runner install: refuses an unreadable registration" \
   1 "names no repository" guard "$REG_DIR" acme/alpha
+printf '%s\n' 'format=rig-runner-state-v1' > "$EMPTY_DIR/.rig-labels"
+check "runner record: a one-line value equal to the format marker stays legacy labels" \
+  0 "format=rig-runner-state-v1" record_value "$EMPTY_DIR" labels
+check "runner record: that one-line marker does not invent structured scope" \
+  0 "" record_value "$EMPTY_DIR" scope
 rm -rf "$REG_DIR" "$EMPTY_DIR"
 
 # --- json_string_array: json_field's array-aware sibling ---------------------
@@ -1581,14 +1616,22 @@ rm -f "$FIX_TAGGED" "$FIX_UNTAGGED" "$FIX_NESTED"
 # The guard is only worth something if it runs BEFORE the box is touched: the
 # token prompt, the download, configure and svc.sh start all come after it.
 # Ordering is the whole fix, so assert it rather than trust it.
-# Matches the CALL, not the word: the comment above it mentions assert_runner_repo
+# Matches the CALL, not the word: the comment above it mentions assert_runner_target
 # too, and a plain grep would keep finding that after the call itself was deleted.
 # The defaults fail closed, so a guard that is gone cannot read as one that merely
 # sits early in the file.
-guard_at="$(grep -nE '^[[:space:]]*assert_runner_repo ' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
+guard_at="$(grep -nE '^[[:space:]]*assert_runner_target ' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
+install_validation_at="$(grep -n 'must each be one line' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
 start_at="$(grep -n 'svc.sh start' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
-check "runner install: the repo guard precedes svc.sh start" \
+check "runner install: one-line validation precedes target inspection" \
+  0 "" test "${install_validation_at:-999999}" -lt "${guard_at:-0}"
+check "runner install: the target guard precedes svc.sh start" \
   0 "" test "${guard_at:-999999}" -lt "${start_at:-0}"
+
+repoint_anchor='#rig-runner-repoint---repo-ownerrepo----org-org---name-name'
+fixed_count() { grep -oF "$1" "$2" | wc -l | tr -d ' '; }
+check "README: both runner repoint links use the rendered heading anchor" \
+  0 "2" fixed_count "$repoint_anchor" "$ROOT/README.md"
 
 check "runner status: --help exits 0"        0 "usage:"           "$ROOT/commands/runner-status.sh" --help
 check "runner status: user needs value"      2 "needs a value"    "$ROOT/commands/runner-status.sh" --user
@@ -1602,11 +1645,24 @@ check "runner remove: unknown flag exits 2"  2 "unknown flag"     "$ROOT/command
 
 check "runner repoint: --help exits 0"       0 "usage:"           "$ROOT/commands/runner-repoint.sh" --help
 check "runner repoint: repo required"        2 "--repo"           "$ROOT/commands/runner-repoint.sh"
+check "runner repoint: repo and org are exclusive" 2 "mutually exclusive" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --org acme
+check "runner repoint: runnergroup needs org" 2 "only valid with --org" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --runnergroup Production
+check "runner repoint: rejects multiline runnergroup before root or teardown" \
+  2 "must each be one line" "$ROOT/commands/runner-repoint.sh" --org acme --runnergroup $'Production\nscope=repo'
+check "runner repoint: rejects multiline labels before root or teardown" \
+  2 "must each be one line" "$ROOT/commands/runner-repoint.sh" --org acme --labels $'linux\nscope=repo'
 check "runner repoint: repo needs value"     2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo
 check "runner repoint: rejects bad slug"     2 "owner/repo"       "$ROOT/commands/runner-repoint.sh" --repo not-a-slug
 check "runner repoint: labels need value"    2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --labels
 check "runner repoint: refuses --user root"  2 "must not be root" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --user root
 check "runner repoint: unknown flag exits 2" 2 "unknown flag"     "$ROOT/commands/runner-repoint.sh" --nope
+repoint_validation_at="$(grep -n 'must each be one line' "$ROOT/commands/runner-repoint.sh" | head -n1 | cut -d: -f1)"
+repoint_remove_at="$(grep -n 'runner-remove.sh' "$ROOT/commands/runner-repoint.sh" | tail -n1 | cut -d: -f1)"
+repoint_install_at="$(grep -n 'runner-install.sh' "$ROOT/commands/runner-repoint.sh" | tail -n1 | cut -d: -f1)"
+check "runner repoint: one-line validation precedes removal" \
+  0 "" test "${repoint_validation_at:-999999}" -lt "${repoint_remove_at:-0}"
+check "runner repoint: one-line validation precedes registration" \
+  0 "" test "${repoint_validation_at:-999999}" -lt "${repoint_install_at:-0}"
 if [ "$(id -u)" -ne 0 ]; then
   check "runner status: refuses non-root"  1 "must run as root" "$ROOT/commands/runner-status.sh"
   check "runner remove: refuses non-root"  1 "must run as root" \
@@ -2295,16 +2351,19 @@ SVC
   # registration, a register writes one naming the repo it was given.
   cat > "$d/config.sh" <<'CFG'
 #!/usr/bin/env bash
-printf 'config %s %s\n' "$1" "${PWD##*/}" >> "$SVC_LOG"
+printf 'config %s %s\n' "$*" "${PWD##*/}" >> "$SVC_LOG"
 if [ "$1" = remove ]; then rm -f ./.runner; exit 0; fi
-url=""; name=""
+[ -z "${CONFIG_FAIL:-}" ] || exit 1
+url=""; name=""; group=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --url)  url="$2";  shift 2 ;;
     --name) name="$2"; shift 2 ;;
+    --runnergroup) group="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
+[ -z "$group" ] || printf '%s\n' "$group" > ./.seen-runner-group
 printf '{"agentId":7,"agentName":"%s","gitHubUrl":"%s","workFolder":"_work"}\n' \
   "$name" "$url" > ./.runner
 CFG
@@ -2332,6 +2391,12 @@ repoint_run() {
 repoint_bare() {
   env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
     SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
+}
+repoint_fail() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" CONFIG_FAIL=1 \
+    RUNNER_REMOVE_TOKEN=removal-token RUNNER_TOKEN=registration-token \
     "$ROOT/commands/runner-repoint.sh" "$@" </dev/null
 }
 
@@ -2417,6 +2482,137 @@ check "install after a rename: the name it answers to still converges it" \
   0 "already registered" install_run --repo acme/new --name fresh
 check "install after a rename: ...in the directory the rename left it in" \
   0 "" grep -qx 'svc start old' "$SVC_LOG"
+
+# #165: organization scope is per instance. New org registrations default to
+# GitHub's Default group and record all routing state beside the labels.
+mkmulti dormant
+check "install --org: a dormant instance registers to the organization" \
+  0 "installed and running" install_run --org acme --name taken
+check "install --org: passes GitHub's Default runner group to config.sh" \
+  0 "Default" cat "$BASE/taken/.seen-runner-group"
+check "install --org: records organization scope" \
+  0 "scope=org" cat "$BASE/taken/.rig-labels"
+check "install --org: marks the structured runner-state format" \
+  0 "format=rig-runner-state-v1" cat "$BASE/taken/.rig-labels"
+check "install --org: records the group beside labels" \
+  0 "group=Default" cat "$BASE/taken/.rig-labels"
+
+# The trust-boundary criterion is cross-scope, so exercise both directions
+# through the full offline lifecycle rather than only tracing the branches.
+mkmulti registered
+check "repoint repo→org: announces the scope direction before teardown" \
+  0 "from repository acme/alpha to organization beta (runner group Default)" \
+  repoint_run --org beta --name old --local
+check "repoint repo→org: records organization scope and Default group" \
+  0 $'scope=org\ngroup=Default' cat "$BASE/old/.rig-labels"
+check "repoint repo→org: preserves labels" \
+  0 "labels=self-hosted,linux" cat "$BASE/old/.rig-labels"
+check "repoint repo→org: forwards Default to config.sh" \
+  0 "Default" cat "$BASE/old/.seen-runner-group"
+check "repoint repo→org: registers the organization URL" \
+  0 '"gitHubUrl":"https://github.com/beta"' cat "$BASE/old/.runner"
+
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'format=rig-runner-state-v1\nscope=org\ngroup=Production\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint org→repo: announces the scope direction before teardown" \
+  0 "from organization acme (runner group Production) to repository beta/gamma" \
+  repoint_run --repo beta/gamma --name old --local
+check "repoint org→repo: records repository scope and no group" \
+  0 $'scope=repo\ngroup=' cat "$BASE/old/.rig-labels"
+check "repoint org→repo: preserves labels" \
+  0 "labels=self-hosted,linux" cat "$BASE/old/.rig-labels"
+check "repoint org→repo: does not forward a runner group" \
+  1 "" test -e "$BASE/old/.seen-runner-group"
+check "repoint org→repo: registers the repository URL" \
+  0 '"gitHubUrl":"https://github.com/beta/gamma"' cat "$BASE/old/.runner"
+
+# A missing group record is legacy/hand-deleted state. An explicit group is a
+# requested change even when the URL already matches; it must not converge it
+# away as if no group had been supplied.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'format=rig-runner-state-v1\nscope=org\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint same org: explicit group repairs a missing group record" \
+  0 "repointed to https://github.com/acme" \
+  repoint_run --org acme --runnergroup Production --name old --local
+check "repoint same org: records the explicit repaired group" \
+  0 "group=Production" cat "$BASE/old/.rig-labels"
+check "repoint same org: forwards the explicit repaired group" \
+  0 "Production" cat "$BASE/old/.seen-runner-group"
+
+# Repoint preserves an org runner's recorded group when no replacement is
+# named. Losing it silently changes which workflows can find the runner.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'format=rig-runner-state-v1\nscope=org\ngroup=Production\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint org→org: says the scope direction before it acts" \
+  0 "from organization acme (runner group Production) to organization beta (runner group Production)" \
+  repoint_run --org beta --name old --local
+check "repoint org→org: preserves the recorded runner group" \
+  0 "group=Production" cat "$BASE/old/.rig-labels"
+check "repoint org→org: forwards the preserved group to config.sh" \
+  0 "Production" cat "$BASE/old/.seen-runner-group"
+
+ORG_STATUS="$(mktemp)"
+env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+  SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" "$ROOT/commands/runner-status.sh" --name old \
+  > "$ORG_STATUS"
+check "status: prints organization scope" 0 "scope:   org" cat "$ORG_STATUS"
+check "status: prints an organization runner's group" 0 "group:   Production" cat "$ORG_STATUS"
+
+# Every pre-#165 record is one plain labels line. A legal value may begin with
+# a structured field name, so detection must key on the versioned multi-line
+# envelope rather than interpreting the label itself as metadata.
+mkmulti registered
+printf '%s\n' 'scope=prod,linux' > "$BASE/old/.rig-labels"
+LEGACY_SCOPE_STATUS="$(mktemp)"
+env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+  SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" "$ROOT/commands/runner-status.sh" --name old \
+  > "$LEGACY_SCOPE_STATUS"
+check "legacy labels: status reports a scope=-prefixed record byte-for-byte" \
+  0 "labels:  scope=prod,linux" cat "$LEGACY_SCOPE_STATUS"
+check "legacy labels: repoint preserves a scope=-prefixed record" \
+  0 "repointed to https://github.com/acme/new" \
+  repoint_run --repo acme/new --name old --local
+check "legacy labels: repoint records the original value byte-for-byte" \
+  0 "labels=scope=prod,linux" cat "$BASE/old/.rig-labels"
+rm -f "$LEGACY_SCOPE_STATUS"
+
+# remove --all may span repository and organization scopes. Before asking for
+# a token, its refusal must name every endpoint the operator will need rather
+# than silently showing only the first runner's scope.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/beta#' "$BASE/taken/.runner"
+printf 'format=rig-runner-state-v1\nscope=org\ngroup=Default\nlabels=self-hosted,linux\n' > "$BASE/taken/.rig-labels"
+remove_bare() {
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    "$ROOT/commands/runner-remove.sh" --all </dev/null
+}
+check "remove --all mixed scopes: names the repository token endpoint" \
+  1 "repos/acme/alpha/actions/runners/remove-token" remove_bare
+check "remove --all mixed scopes: names the organization token endpoint" \
+  1 "orgs/beta/actions/runners/remove-token" remove_bare
+check "remove --all mixed scopes: refuses before touching either service" \
+  1 "" test -s "$SVC_LOG"
+
+# remove does not mint a token, but it names and uses the endpoint matching the
+# runner's current scope so the supplied short-lived token comes from the org.
+check "remove: an org runner names the org remove-token endpoint" \
+  0 "orgs/beta/actions/runners/remove-token" \
+  env PATH="$STUBS:$PATH" SYSTEMCTL_UNITS="$NO_UNITS" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    SYSTEMCTL_FAIL="" FAKE_HOME="$FAKE_HOME" SVC_LOG="$SVC_LOG" \
+    RUNNER_REMOVE_TOKEN=removal-token "$ROOT/commands/runner-remove.sh" --name taken
+
+# If the far-end registration fails after teardown, the recovery command must
+# carry the group too; omitting it silently moves the runner to Default.
+mkmulti registered
+sed -i 's#https://github.com/acme/alpha#https://github.com/acme#' "$BASE/old/.runner"
+printf 'format=rig-runner-state-v1\nscope=org\ngroup=Production\nlabels=self-hosted,linux\n' > "$BASE/old/.rig-labels"
+check "repoint org→org: failed registration recovery preserves the group" \
+  1 "rig runner install --org beta --runnergroup Production" \
+  repoint_fail --org beta --name old --local
 FAKE_HOME=""
 
 # Round 4 of #174, @codex-bot-andresmgsl, executed end to end: a box running a

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # rig runner install — GitHub Actions self-hosted runner as a systemd service
 # under an unprivileged user. Outbound-only (long-poll to GitHub), no Docker.
-# Convergent toward --repo, PER INSTANCE (#166): re-running against the repo
-# that instance is already on leaves it alone; an instance registered to a
-# DIFFERENT repo is refused, never silently restarted on the old one (that is
-# `repoint`'s job). A box runs any number of instances, keyed by --name.
+# Convergent toward one repository or organization target, PER INSTANCE
+# (#165, #166). A scope or target change is refused here and belongs to
+# `repoint`; widening repo access to an organization is a trust-boundary act.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -17,9 +16,11 @@ die()  { printf 'rig-runner: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig runner install --repo <owner/repo> [options]
+usage: rig runner install (--repo <owner/repo> | --org <org>) [options]
 
-  --repo <owner/repo>   GitHub repository the runner registers to (required)
+  --repo <owner/repo>   register this instance to one GitHub repository
+  --org <org>           register this instance to a GitHub organization
+  --runnergroup <name>  organization runner group (default: Default)
   --version <pin>       actions/runner release to install, e.g. 2.335.1
                         (default: the latest release, resolved at install
                         time — safe here because the runner self-updates
@@ -37,10 +38,10 @@ unprivileged user. The runner is an agent, not a server: it long-polls
 GitHub outbound and needs ZERO inbound ports. No Docker is installed and
 the runner user gets no supplementary groups.
 
-Provide the short-lived registration token via the RUNNER_TOKEN env var or
-the interactive prompt (get one from the repo's Settings > Actions >
-Runners > "New self-hosted runner", or:
-  gh api -X POST repos/<owner/repo>/actions/runners/registration-token).
+Exactly one of --repo and --org is required. Provide the short-lived
+registration token via RUNNER_TOKEN or the interactive prompt (or mint it):
+  gh api -X POST repos/<owner/repo>/actions/runners/registration-token
+  gh api -X POST orgs/<org>/actions/runners/registration-token
 It is consumed at registration and never written to disk by rig.
 
 INSTANCES. Each instance gets its own directory (~/actions-runner/<name>),
@@ -49,11 +50,12 @@ its own _work and its own systemd unit; the service user is shared unless
 name. Boxes installed before instances existed keep the directory and the
 unit they have: omit --name there and rig converges that runner in place.
 
-Convergent toward --repo, per instance: re-running against the repo that
-instance is already on re-uses the binary, skips registration, and never
-asks for a token. An instance registered to a DIFFERENT repo is refused —
-moving one is `rig runner repoint --repo <owner/repo> --name <name>`, and
-running a SECOND runner beside it is this command with a new --name.
+Convergent toward one scope and target, per instance: re-running against the
+repository or organization that instance is already on re-uses the binary,
+skips registration, and never asks for a token. A different target or a
+repo↔organization scope change is refused — moving one is `rig runner
+repoint`, and running a SECOND runner beside it is this command with a new
+--name.
 
 A name already taken by a runner rig did not create is refused rather than
 re-registered: config.sh --replace would deregister that runner. So is a
@@ -65,6 +67,9 @@ EOF
 
 # --- args (validated before the root check, so errors are testable) ---------
 REPO=""
+ORG=""
+RUNNER_GROUP="Default"
+RUNNER_GROUP_GIVEN=0
 VERSION=""
 RUNNER_NAME="$(hostname)"
 NAME_GIVEN=0
@@ -75,6 +80,12 @@ while [ $# -gt 0 ]; do
     --repo)
       [ $# -ge 2 ] || die "--repo needs a value" 2
       REPO="$2"; shift 2 ;;
+    --org)
+      [ $# -ge 2 ] || die "--org needs a value" 2
+      ORG="$2"; shift 2 ;;
+    --runnergroup)
+      [ $# -ge 2 ] || die "--runnergroup needs a value" 2
+      RUNNER_GROUP="$2"; RUNNER_GROUP_GIVEN=1; shift 2 ;;
     --version)
       [ $# -ge 2 ] || die "--version needs a value" 2
       VERSION="$2"; shift 2 ;;
@@ -93,9 +104,25 @@ while [ $# -gt 0 ]; do
 done
 
 # --- validation ----------------------------------------------------------
-[ -n "$REPO" ] || die "--repo <owner/repo> is required" 2
-if ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+[ -z "$REPO" ] || [ -z "$ORG" ] || die "--repo and --org are mutually exclusive" 2
+[ -n "$REPO" ] || [ -n "$ORG" ] || die "exactly one of --repo <owner/repo> or --org <org> is required" 2
+if [ -n "$REPO" ] && ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
   die "--repo must be owner/repo" 2
+fi
+if [ -n "$ORG" ] && ! printf '%s' "$ORG" | grep -qE '^[A-Za-z0-9_.-]+$'; then
+  die "--org must be an organization name" 2
+fi
+if [ -n "$REPO" ] && [ "$RUNNER_GROUP_GIVEN" -eq 1 ]; then
+  die "--runnergroup is only valid with --org" 2
+fi
+[ -n "$RUNNER_GROUP" ] || die "--runnergroup must not be empty" 2
+case "${RUNNER_GROUP}${LABELS}" in
+  *$'\n'*|*$'\r'*) die "--runnergroup and --labels must each be one line" 2 ;;
+esac
+if [ -n "$ORG" ]; then
+  SCOPE="org"; TARGET="$ORG"
+else
+  SCOPE="repo"; TARGET="$REPO"; RUNNER_GROUP=""
 fi
 VERSION="${VERSION#v}"
 [ "$RUNNER_USER" != "root" ] || die "runner user must not be root" 2
@@ -129,10 +156,10 @@ command -v curl >/dev/null || die "curl is required (run rig bootstrap first)"
 
 # --- which instance is this, and is it already registered elsewhere? ----------
 # Before anything is prompted for, downloaded, or started: the instance --name
-# selects must agree with --repo. Everything below this point treats an
+# selects must agree with the requested target. Everything below this point treats an
 # existing .runner as "nothing to do" — which is right for the repo that
 # instance is already on, and silently wrong for any other. See
-# assert_runner_repo.
+# assert_runner_target.
 #
 # resolve_instance sets RUNNER_DIR, and may correct RUNNER_NAME when it adopts
 # a legacy install. It needs USER_HOME, so it runs once here when the user is
@@ -155,7 +182,7 @@ REG_PENDING=1
 if id -u "$RUNNER_USER" >/dev/null 2>&1; then
   USER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
   resolve_instance
-  assert_runner_repo "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" || exit 1
+  assert_runner_target "$RUNNER_DIR" "$SCOPE" "$TARGET" "$RUNNER_GROUP" "$RUNNER_NAME" || exit 1
   if [ -e "$RUNNER_DIR/.runner" ]; then
     REG_PENDING=0
   fi
@@ -257,14 +284,16 @@ fi
 if [ -e "$RUNNER_DIR/.runner" ]; then
   log "already registered; skipping configure"
 else
-  log "registering runner ${RUNNER_NAME} against ${REPO}"
-  (cd "$RUNNER_DIR" && runuser -u "$RUNNER_USER" -- env HOME="$USER_HOME" \
-    ./config.sh --url "https://github.com/${REPO}" --token "$RUNNER_TOKEN" \
+  log "registering runner ${RUNNER_NAME} against ${SCOPE} ${TARGET}"
+  CONFIG_ARGS=(--url "https://github.com/${TARGET}" --token "$RUNNER_TOKEN"
     --name "$RUNNER_NAME" --labels "$LABELS" --unattended --replace)
+  [ "$SCOPE" != "org" ] || CONFIG_ARGS+=(--runnergroup "$RUNNER_GROUP")
+  (cd "$RUNNER_DIR" && runuser -u "$RUNNER_USER" -- env HOME="$USER_HOME" \
+    ./config.sh "${CONFIG_ARGS[@]}")
   # GitHub owns the labels and the runner does not persist them locally, so
   # `runner status` and `runner repoint` would have nothing to read. Record
   # what we registered with — box-local metadata, never a credential.
-  printf '%s\n' "$LABELS" > "$RUNNER_DIR/.rig-labels"
+  runner_write_record "$RUNNER_DIR" "$SCOPE" "$RUNNER_GROUP" "$LABELS"
   chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR/.rig-labels"
 fi
 
@@ -276,5 +305,5 @@ fi
 
 log "runner ${RUNNER_NAME} (labels: ${LABELS}) installed and running at ${RUNNER_DIR}"
 log "every runner on this box: rig runner status"
-log "verify it shows Idle under the repo's Settings > Actions > Runners"
+log "verify it shows Idle under the ${SCOPE}'s Settings > Actions > Runners"
 log "the deny-all provider firewall stays the operator's job outside rig — this box needs no inbound ports for the runner"
