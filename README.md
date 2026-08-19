@@ -992,6 +992,7 @@ as `bootstrap control-plane-server` → `coolify install`):
 rig bootstrap runner-server --hostname my-ci-box --users ./users
 rig runner install --repo acme/widgets                 # named for this host
 rig runner install --repo acme/widgets --name ci-2     # a second one beside it
+rig runner install --org acme --runnergroup Production # shared organization pool
 ```
 
 Installs GitHub's official `actions/runner` as a systemd service under an
@@ -1007,6 +1008,11 @@ membership is root-equivalent, which is a gratuitous path to root on a box
 whose whole point is a narrow blast radius. Add Docker only once a job
 genuinely needs it, and rethink the isolation model then.
 
+- exactly one of `--repo <owner/repo>` and `--org <org>` — a repository runner
+  sees one queue; an organization runner shares one queue across the repos its
+  runner group permits
+- `--runnergroup <name>` — organization runner group (default: `Default`),
+  passed directly to GitHub's `config.sh`; valid only with `--org`
 - `--version <pin>` — actions/runner release to install (default: the
   latest release, resolved at install time; e.g. `--version 2.335.1` —
   the latest as of this writing). Pin it when you need a deterministic,
@@ -1022,6 +1028,18 @@ genuinely needs it, and rethink the isolation model then.
 it at the interactive prompt. It's short-lived, consumed at registration, and
 never written to disk by rig.
 
+Mint that token at the endpoint matching the selected scope:
+
+```sh
+gh api -X POST repos/<owner/repo>/actions/runners/registration-token
+gh api -X POST orgs/<org>/actions/runners/registration-token
+```
+
+Runner groups are available to organizations on every GitHub plan, including
+Free (since October 2024). Some older GitHub documentation still says Team or
+Enterprise; the organization settings page is the authority for the groups
+available to the token and account in use.
+
 Why latest-by-default here when `coolify install` demands a pin: the two
 tools age differently. Coolify never self-updates (`AUTOUPDATE=false`), so
 its version is a contract your deploy tooling is verified against — stating
@@ -1030,13 +1048,11 @@ from stale runners, so freezing it would just make it silently stop taking
 work. The install-time version is a starting point either way; `--version`
 exists for when you want that starting point deterministic and auditable.
 
-Convergent **toward `--repo`, per instance** — re-running against the repo
-that instance is already on re-uses the binary, skips registration, and never
-asks for a token. Pointed at a *different* repo it **refuses**, and names
-both: skipping there would not be convergence, it would be ignoring the
-argument — restarting the runner on the **old** repo while reporting success,
-leaving the repo you asked for with no runner and its `runs-on` jobs queued
-forever. Moving a runner between repos is a trust-boundary act; that verb is
+Convergent **toward one scope and target, per instance** — re-running against
+the same repository or organization re-uses the binary, skips registration,
+and never asks for a token. A different target, runner group, or repo↔org
+scope change **refuses** and names both sides: widening one repo to a whole
+organization is a trust-boundary act, not convergence. That move belongs to
 [`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo---name-name).
 Running a *second* runner beside it is this command with a new `--name`, and
 the refusal says so.
@@ -1061,9 +1077,10 @@ rig runner status                 # every runner on this box
 rig runner status --name ci-2     # one of them, in detail
 ```
 
-With no `--name`, every runner on the box: its name, the repo it is
-registered to, its install directory, its systemd unit and state, and whether
-rig manages it. With `--name`, that one in detail, labels included.
+With no `--name`, every runner on the box: its name, repository/organization
+scope and target, organization runner group, install directory, systemd unit
+and state, and whether rig manages it. With `--name`, that one in detail,
+labels included.
 
 **The listing is the feature.** Instances are found both under the runner
 user's `~/actions-runner` and by scanning systemd for `actions.runner.*`
@@ -1106,6 +1123,7 @@ different endpoint, and mixing them up is the easy mistake:
 
 ```sh
 gh api -X POST repos/<owner/repo>/actions/runners/remove-token
+gh api -X POST orgs/<org>/actions/runners/remove-token
 ```
 
 Supply it via `RUNNER_REMOVE_TOKEN` or the prompt; it never touches disk.
@@ -1143,11 +1161,15 @@ Convergent — a box with no runner installed exits 0.
 rig runner repoint --repo acme/widgets                            # the one runner
 rig runner repoint --repo acme/widgets --name ci-2                # say which
 rig runner repoint --repo acme/widgets --name ci-2 --rename ci-b  # and rename it
+rig runner repoint --org acme --runnergroup Production --name ci-2
 ```
 
-Moves **one** installed runner from one repository to another: deregister,
-re-register, reusing the binary already on the box. It keeps that runner's
-name unless you pass `--rename`.
+Moves **one** installed runner between repositories or organizations:
+deregister, re-register, reusing the binary already on the box. It states the
+scope direction before touching the runner and keeps its name unless you pass
+`--rename`. An org→org move preserves the locally recorded runner group unless
+`--runnergroup` names a replacement; an unrecorded/new org target uses
+`Default`.
 
 **`--name` is required where the box runs more than one.** Moving one of four
 while the other three keep taking jobs from the old repo — and reporting
@@ -1189,15 +1211,15 @@ should fail while the runner is still registered and working, not halfway
 through the move. If re-registration fails anyway, rig says so plainly and
 prints the exact `runner install` line that finishes the job.
 
-> **Labels do not survive a move on their own.** GitHub holds them; the runner
-> does not persist them locally. rig now records what it registered with, so
-> `repoint` and `status` can read it back — but a runner installed before rig
+> **Labels and runner groups do not survive a move on their own.** GitHub holds
+> them; the runner does not persist them locally. rig records labels, scope and
+> group together, so `repoint` and `status` can read them back — but a runner installed before rig
 > did that has nothing to read, and `repoint` falls back to the `ci-runner`
 > default and warns loudly before it touches anything. Labels are what
 > `runs-on` matches, so a silent change there is a workflow that simply stops
 > finding its runner. Pass `--labels` if yours differ.
 
-Convergent — repointing to the repo it is already on changes nothing, exits 0,
+Convergent — repointing to the same scope, target and group changes nothing, exits 0,
 and never asks for a token, unless `--rename` asks for a change: that is a
 re-registration and needs both tokens. `--rename` naming the name the instance
 already has is not a change, and converges with the rest.

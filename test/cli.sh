@@ -1446,6 +1446,11 @@ guard() { # guard <runner_dir> <owner/repo>
     . "$1/commands/lib/runner-config.sh"
     assert_runner_repo "$2" "$3"' _ "$ROOT" "$1" "$2"
 }
+target_guard() { # target_guard <runner_dir> <repo|org> <target> <group>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    assert_runner_target "$2" "$3" "$4" "$5"' _ "$ROOT" "$1" "$2" "$3" "$4"
+}
 REG_DIR="$(mktemp -d)"    # a box registered to acme/alpha
 EMPTY_DIR="$(mktemp -d)"  # a box with no runner at all
 printf '%s\n' '{"agentId":7,"agentName":"ci-box","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' \
@@ -1457,6 +1462,12 @@ check "runner install: the refusal names the repo that was asked for" \
   1 "not https://github.com/acme/beta" guard "$REG_DIR" acme/beta
 check "runner install: the refusal points at repoint" \
   1 "rig runner repoint --repo acme/beta" guard "$REG_DIR" acme/beta
+check "runner install: repo→org refuses as a scope change" \
+  1 "(repo)" target_guard "$REG_DIR" org acme Default
+check "runner install: repo→org refusal names the organization and group" \
+  1 "organization acme (runner group Default)" target_guard "$REG_DIR" org acme Default
+check "runner install: repo→org refusal points at an explicit repoint" \
+  1 "rig runner repoint --org acme" target_guard "$REG_DIR" org acme Default
 # Convergence is the property worth keeping: same repo stays a clean no-op.
 check "runner install: the repo it is already on is a no-op" \
   0 "" guard "$REG_DIR" acme/alpha
