@@ -36,14 +36,22 @@
 # newer templates by default (ruled 2026-07-24 on #110: pinned, not
 # main-tracked). RIG_TEMPLATES_REF overrides it per mint.
 #
-# Registry head reviewed and merged by rig-templates#10 (closing
-# rig-templates#11): the four agent tenants, the six machine-role definitions
-# formerly carried in bootstrap.sh, and staging-box — the agentless, hardened
-# tenant whose arrival leaves rig's tree defining no role at all (#185). The MERGE commit,
-# not the merged PR's head: that repo merges with merge commits today, but a
-# switch to squash or rebase orphans the head, and only the commit on `main`
-# is a pin a fetch can always resolve.
-RIG_TEMPLATES_PIN=f77deae523112293320f29e1f8e5036257c6a685
+# The commit below is the registry's own release **0.1.0** — published
+# 2026-08-20, https://github.com/heavy-duty/rig-templates/releases/tag/0.1.0 —
+# carrying the four agent tenants, the six machine-role definitions formerly
+# held in bootstrap.sh, and staging-box, the agentless hardened tenant whose
+# arrival leaves rig's tree defining no role at all. Pinning a released commit
+# means the definitions that run as root on tailnet-joined metal are an
+# artifact with a version, published notes and a drill record behind it (#187).
+#
+# The VALUE IS THE SHA the tag names, never the tag: a tag is mutable and this
+# pin resolves code that runs as root (rig-templates#8 D3). It is also the
+# MERGE commit, not the merged PR's head — that repo merges with merge commits
+# today, but a switch to squash or rebase orphans the head, and only the commit
+# on `main` is a pin a fetch can always resolve. The release name lives in this
+# block and never trailing on the assignment: four readers parse that line with
+# `sed -n 's/^RIG_TEMPLATES_PIN=//p'` and not one of them strips a comment.
+RIG_TEMPLATES_PIN=4011092d8b23a2c8f077899325a98f3d84c275b9
 
 # The template.env schema. Grammar: blank lines, '#' comments, and
 # KEY="value" — nothing else. Parsed by regex, never sourced.

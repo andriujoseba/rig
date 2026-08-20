@@ -1265,6 +1265,16 @@ check "templates: the bootstrap runbook note survives the split" 0 "Bootstrap ru
 # shellcheck disable=SC2016
 check "templates: the pin is one greppable line" 0 "1" \
   bash -c 'grep -c "^RIG_TEMPLATES_PIN=" "$1/commands/lib/templates.sh"' _ "$ROOT"
+# ...and what that line yields is a BARE 40-hex SHA. The four readers of this
+# value — install.sh, drill/drill.sh and both suites — share one expression and
+# not one of them strips a comment, so a trailing `# 0.1.0` would travel whole
+# into `templates@<sha> # 0.1.0/` and miss every later resolve. A release name
+# belongs in the comment block above the assignment (#187).
+# shellcheck disable=SC2016
+check "templates: the pin value is a bare 40-hex SHA, nothing else" 0 "bare-40-hex" \
+  bash -c 'v="$(sed -n "s/^RIG_TEMPLATES_PIN=//p" "$1/commands/lib/templates.sh")"
+    [[ "$v" =~ ^[0-9a-f]{40}$ ]] && echo bare-40-hex || echo "not a bare 40-hex SHA: [$v]"' \
+  _ "$ROOT"
 # shellcheck disable=SC2016
 check "templates: unset knobs fall back to the pin" 0 "the in-tree pin" \
   bash -c '. "$1/commands/lib/templates.sh" && templates_source_desc' _ "$ROOT"
