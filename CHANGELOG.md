@@ -4,6 +4,50 @@ History before 0.1.0 lives in git — rig grew its version surface (`VERSION`,
 `rig --version`, the side-by-side `versions/<v>` install layout; #35/#36)
 on the way to cutting its first release, and this file starts there.
 
+## 0.3.2 — 2026-08-21
+
+### Added
+
+- `refs-guard` refuses a PR body promising `Refs #N` while GitHub says #N closes, on a body edit as much as on a push (#168).
+- `rerun-owed` on a fork PR starts its own rerun: `ci-rerun` services the label, or refuses and leaves it standing (#168).
+- `rig runner` is keyed on the runner name, not the box: `install --name` creates or converges one instance, each with its own directory, `_work` and unit (#166).
+- `rig runner status` lists every runner on the box, discovered from `actions.runner.*` units, flagging the ones rig did not create as unmanaged (#166).
+- `rig runner remove --all` tears down every runner on the box (#166).
+- `rig runner install --org` registers an instance to a shared organization queue, with `--runnergroup` selecting its runner group (#165).
+- Pinned template registries install with rig and serve default converges offline (#153).
+- Machine-role templates can declare bootstrap traits and an optional final root install hook (#152).
+
+### Changed
+
+- `RIG_TEMPLATES_PIN` now names the commit the rig-templates `0.1.0` release tags, not a registry head (#187).
+- Every tenant role is now defined in the rig-templates registry; rig's tree defines none (#185).
+- `RIG_TEMPLATES_PIN` moves to the registry head carrying `staging-box` (#185).
+- CI pins third-party actions to immutable commit SHAs and refuses unpinned workflow references (#169).
+- Ceremony automation and doctrine are pinned to 0.7.4, with event triggers dispatching a separate hourly board sweep (#167).
+- `remove` and `repoint` refuse without `--name` where the box runs more than one runner, and name the candidates (#166).
+- BREAKING: `rig runner repoint --name` selects which runner to move; the new name it used to set is now `--rename` (#166).
+- `rig runner remove` exits non-zero and names the runners still standing when it could not finish, rather than reporting a removal it did not complete (#166).
+- `rig runner remove` stops the service even on the paths where it cannot deregister: reaching GitHub needs the runner's directory, stopping it needs only the unit name (#166).
+- `rig runner remove --all` no longer abandons the targets after one that fails — every runner gets its turn and the failures land in the exit status (#166).
+- `managed` means rig created the instance, recorded in `.rig-instance`, rather than "the directory sits under the base": a hand-rolled `~github-runner/actions-runner/<name>` is reported `unmanaged` and `install` refuses to register over it (#166).
+- The legacy single-runner layout stays `managed` without the marker, since adopting it in place is the migration for every box installed before this (#166).
+- `rig runner install` and `repoint` refuse an instance living outside the selected `--user`'s base, naming the user that owns it: building over it would re-own another service user's runner directory (#166).
+- Runner status, removal and repointing preserve and report repository or organization scope plus the organization runner group (#165).
+- Agent box scratch defaults to a private disk-backed directory instead of RAM-backed `/tmp` (#164).
+- Tenant definitions can opt out of agent artifacts and enable shared sshd hardening (#155).
+- Machine-role presets now come from the pinned rig-templates registry instead of bootstrap's traits table (#154).
+
+### Fixed
+
+- CONTRIBUTING identifies the builder as the panel requester and resolves the roster from labels.conf (#178).
+- `rig runner status`, `remove` and `repoint` no longer die silently — exit 1, no output — on a box that has systemd and no `actions.runner.*` unit, which is the ordinary "nothing installed here" path they promise to converge on (#166).
+- `rig runner repoint --rename` refuses a name another instance on this box already answers to, before a token is asked for and before anything is stopped: the collision used to surface after the teardown, leaving the runner deregistered and reachable under neither name (#166).
+- `rig runner repoint --rename` with the name the instance already has converges, rather than tearing the runner down to re-register it as itself (#166).
+- `rig runner install --name` refuses a directory already holding a runner that answers to another name — hand-rolled, or renamed by `repoint` — instead of adopting it, rewriting its identity and reporting a runner it never created (#166).
+- `rig runner status` no longer calls a runner rig created under another service user `unmanaged`: an instance found by the unit scan is classified from the evidence in its directory, like the ones under the selected base (#166).
+- Agent tenant boxes ship cron — binary asserted, service enabled and active — so the duty engine can arm its timer (#162).
+- The netmap tag read is scoped to `Self`: an untagged node next to tagged peers no longer reads a peer's tag, false-refusing `--join login` and false-verifying untagged authkey joins (#160).
+
 ## 0.3.1 — 2026-07-24
 
 ### Added
