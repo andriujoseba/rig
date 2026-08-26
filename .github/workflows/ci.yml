@@ -42,7 +42,7 @@ jobs:
         run: bash test/release.sh
       # The drill harness's honesty: refusals, the skip/pass/fail classifier,
       # the idempotence capture-and-diff, the record emitter. Network-free and
-      # root-free — the live three-leg run is a release's drill, not CI's.
+      # root-free — the live two-leg run is a release's drill, not CI's.
       - name: drill harness tests — the instrument itself
         run: bash test/drill.sh
       # The release guards, doctrine in heavy-duty/ceremony's README (#13's

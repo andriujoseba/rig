@@ -95,7 +95,7 @@ float to a moving ref.
 What stays rig's is the **drill** — the real-hardware gate before the
 handoff of a release PR, run by `drill/drill.sh` (#105): `rig bootstrap`
 converging the machine to its role twice with the second run diffed empty,
-`test/db-integration.sh`, and a coolify install. Rig's drill asserts
+installing Docker directly, and running `test/db-integration.sh`. Rig's drill asserts
 **convergence** (a machine reaches its role,
 idempotently), it runs `--host yes` with `BOX_REF=release/<box-version>` so
 it exercises the box that will actually ship, and drills that share a

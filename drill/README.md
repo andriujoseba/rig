@@ -11,7 +11,7 @@ release (#105, and #107's debt).
 
 - **A throwaway Debian 13 machine** you can format, reached as root. The
   drill hardens its sshd, renames it, joins it to a tailnet, and installs
-  box/Incus and Coolify on it. It is not coming back.
+  box/Incus and Docker on it. It is not coming back.
   The machine is its own reset — there is no teardown script and no need
   for one.
 - **The pinned candidate refs, both of them.** `--rig-ref` and
@@ -28,9 +28,6 @@ release (#105, and #107's debt).
   `tag:server` outside the control-plane shapes).
 - **A users file** (`--users`) naming at least one operator — leg 1
   asserts the accounts and keys actually converged.
-- **For leg 3** (coolify): a version pin, `--coolify-version 4.1.2`.
-  No pin, no leg — rig's own `coolify install` refuses to default a
-  version and so does its drill. The skip is recorded.
 - **A run ID** (`--run-id`) when this drill shares a substrate with
   box's or cast's — the shared ID is what lets the per-repo records be
   joined afterwards. Defaults to `drill-<date>`.
@@ -43,17 +40,17 @@ in the checkout's `drills/`):
 ```sh
 TS_AUTHKEY=tskey-... bash drill/drill.sh \
   --rig-ref release/0.4.0 --box-ref 0.9.0 \
-  --users ./drill-users --run-id drill-2026-07-24-a \
-  --coolify-version 4.1.2 --yes
+  --users ./drill-users --run-id drill-2026-07-24-a --yes
 ```
 
 `--box-ref` is a tag on purpose: since #103 the box that ships is the
 `BOX_RELEASE` tag, so a `release/…` branch is the wrong thing to pin for
 box — while a release branch stays exactly right for rig's own candidate.
 
-It runs unattended from there. Legs execute as 1, 3, 2 — Coolify's installer
-is what puts Docker on the box and the db leg needs a daemon — and the record
-lists them as they ran. A failing check never aborts the
+It runs unattended from there. Legs execute as 1, 2. Before leg 2 the drill
+installs Debian's Docker package directly, so a pristine machine supplies a
+real daemon for the database round-trip. The record lists legs as they ran.
+A failing check never aborts the
 run (`set -u`, no `-e`: a failing check is data), and the summary counts
 passes, failures and skips separately.
 
@@ -70,10 +67,10 @@ passes, failures and skips separately.
    `box doctor` passes. It stops there and says so in the output — the
    isolation boundary is **box's** drill's assertion, never rig's.
 2. **db** — `test/db-integration.sh` from the *installed* tree: a real
-   dump/restore round-trip. Its clean-skip contract (no Docker → loud
-   skip, exit 0) survives into the record as a SKIP, never a pass.
-3. **Coolify** — installed at the pin, `AUTOUPDATE=false` landed in the
-   effective `.env`, container running.
+   dump/restore round-trip, after the drill installs Docker directly. The
+   script's clean-skip contract (no Docker → loud skip, exit 0) remains the
+   classifier's tiebreaker and survives into the record as a SKIP, never a
+   pass, if Docker provisioning did not leave a daemon.
 
 ## The record
 
@@ -86,4 +83,4 @@ file and nothing else.
 
 The instrument's own honesty — the refusals, the skip accounting, the
 capture-and-diff, the emitter — is `test/drill.sh`'s job, and CI runs it
-on every PR. The live three-leg run is a release's job, once per cycle.
+on every PR. The live two-leg run is a release's job, once per cycle.

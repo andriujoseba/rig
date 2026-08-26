@@ -72,7 +72,8 @@ check "no args shows usage, exit 2"      2 "usage:" "$ROOT/bin/rig"
 check "--help exits 0"                   0 "usage:" "$ROOT/bin/rig" --help
 check "help exits 0"                     0 "usage:" "$ROOT/bin/rig" help
 check "unknown command exits 2"          2 "unknown command" "$ROOT/bin/rig" frobnicate
-check "bare coolify shows usage, exit 2" 2 "usage:" "$ROOT/bin/rig" coolify
+check "retired command falls through to general usage, exit 2" 2 "usage:" \
+  "$ROOT/bin/rig" coolify install --version 4.1.2
 
 check "bootstrap: role required, exit 2"   2 "role required"  "$ROOT/commands/bootstrap.sh"
 check "bootstrap: no-role refusal lists registry machine roles" 2 "workstation" "$ROOT/commands/bootstrap.sh"
@@ -1495,96 +1496,6 @@ check "tenant: the marker write follows the context-file converge" \
 # shellcheck disable=SC2016
 check "tenant: the marker write is gated on the resolved root-door, not a spelling" 0 "" \
   grep -qxF 'if [ -z "$EXISTING_ROOT_DOOR" ]; then' "$ROOT/commands/bootstrap-tenant.sh"
-check "coolify: version required, exit 2"  2 "--version"      "$ROOT/commands/coolify-install.sh"
-check "coolify: --help exits 0"            0 "usage:"         "$ROOT/commands/coolify-install.sh" --help
-check "coolify: version needs value"       2 "needs a value"  "$ROOT/commands/coolify-install.sh" --version
-check "coolify: unknown flag exits 2"      2 "unknown flag"   "$ROOT/commands/coolify-install.sh" --nope
-if [ "$(id -u)" -ne 0 ]; then
-  check "coolify: refuses non-root"        1 "must run as root" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-else
-  echo "skip: coolify non-root refusal (running as root)"
-fi
-
-check "bare coolify backup shows usage, exit 2" 2 "usage:" "$ROOT/bin/rig" coolify backup
-check "coolify backup: bad subcommand exits 2"  2 "usage:" "$ROOT/bin/rig" coolify backup frobnicate
-check "coolify backup: --help exits 0"          0 "usage:" "$ROOT/commands/coolify-backup-install.sh" --help
-check "coolify backup: schedule needs value"    2 "needs a value" "$ROOT/commands/coolify-backup-install.sh" --schedule
-check "coolify backup: pg-container needs value" 2 "needs a value" "$ROOT/commands/coolify-backup-install.sh" --pg-container
-check "coolify backup: unknown flag exits 2"    2 "unknown flag"  "$ROOT/commands/coolify-backup-install.sh" --nope
-if [ "$(id -u)" -ne 0 ]; then
-  check "coolify backup: refuses non-root"      1 "must run as root" "$ROOT/commands/coolify-backup-install.sh"
-else
-  echo "skip: coolify backup non-root refusal (running as root)"
-fi
-
-# --- role-marker sanity: coolify verbs off the control plane (#25) -----------
-# Both coolify commands read /etc/rig/role and WARN — never die — when the
-# marker names a non-control-plane role: the likeliest story is the wrong SSH
-# session, but the marker is advisory and must not outrank the operator. The
-# warning fires BEFORE the root check (same testability rule as arg errors),
-# so a non-root run prints it and then hits the root refusal — provable here
-# with RIG_ROLE_MARKER pointed at fixtures (repo precedent: the close-root
-# marker gate). Counting fires proves silence too: a control-plane marker, an
-# absent marker, and a marker-less box must all stay quiet, because warning on
-# absence would nag every pre-marker box on every legitimate run.
-marker_warns() { # marker_warns <marker_path> <cmd...> — how many warnings fired
-  local marker="$1"; shift
-  env RIG_ROLE_MARKER="$marker" "$@" 2>&1 | grep -c "not a control-plane box" || true
-}
-MARKER_FIX="$(mktemp -d)"
-printf 'role=workload-server root-door=open host=no join=authkey\n'    > "$MARKER_FIX/workload"
-printf 'role=control-plane-server root-door=open host=no join=authkey\n' > "$MARKER_FIX/control-plane"
-printf 'role=control-plane-server\n'                                   > "$MARKER_FIX/bare-control-plane"
-# A PRE-#76 marker, verbatim as a real box bootstrapped before the rename
-# carries it. This is the one fixture that must keep its old spelling: the
-# CHANGELOG promises such a box takes the warning branch and keeps working,
-# and until this existed nothing asserted it — every other fixture here was
-# renamed with the code, so the migration story was documented and untested.
-printf 'role=control-plane class=server host=no join=authkey\n'        > "$MARKER_FIX/pre-rename-cp"
-if [ "$(id -u)" -ne 0 ]; then
-  check "coolify: warns on a non-control-plane marker" 0 "1" \
-    marker_warns "$MARKER_FIX/workload" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-  check "coolify: control-plane marker stays silent" 0 "0" \
-    marker_warns "$MARKER_FIX/control-plane" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-  # A bare marker line with no trailing traits must read the same as the full
-  # one — the guard must not couple to the marker's field formatting.
-  check "coolify: a bare 'role=control-plane-server' line (no traits) stays silent" 0 "0" \
-    marker_warns "$MARKER_FIX/bare-control-plane" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-  check "coolify: absent marker stays silent (advisory, not a gate)" 0 "0" \
-    marker_warns "$MARKER_FIX/absent" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-  # The migration story, pinned in both halves: a pre-#76 control plane WARNS
-  # (its marker no longer names a role that exists) but is never refused. Both
-  # halves matter — a rename that turned this into a refusal would break the
-  # exact boxes the CHANGELOG promises keep working, and it would do it on the
-  # command that installs the control plane.
-  check "coolify: a PRE-#76 'role=control-plane' marker warns (migration)" 0 "1" \
-    marker_warns "$MARKER_FIX/pre-rename-cp" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-  check "coolify: ...and is still never refused" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$MARKER_FIX/pre-rename-cp" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-  check "coolify backup: a PRE-#76 'role=control-plane' marker warns (migration)" 0 "1" \
-    marker_warns "$MARKER_FIX/pre-rename-cp" "$ROOT/commands/coolify-backup-install.sh"
-  # The warning must stay a warning: the run proceeds past it and stops at the
-  # root check (exit 1), never turned into a marker refusal.
-  check "coolify: the marker warns but never refuses" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$MARKER_FIX/workload" "$ROOT/commands/coolify-install.sh" --version 4.1.2
-  check "coolify backup: warns on a non-control-plane marker" 0 "1" \
-    marker_warns "$MARKER_FIX/workload" "$ROOT/commands/coolify-backup-install.sh"
-  check "coolify backup: control-plane marker stays silent" 0 "0" \
-    marker_warns "$MARKER_FIX/control-plane" "$ROOT/commands/coolify-backup-install.sh"
-  check "coolify backup: the marker warns but never refuses" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$MARKER_FIX/workload" "$ROOT/commands/coolify-backup-install.sh"
-else
-  echo "skip: coolify role-marker warning checks (running as root)"
-fi
-rm -rf "$MARKER_FIX"
-# Root runs skip the live checks above, so also pin the warning's presence in
-# both shipped scripts — a deleted advisory cannot ship green (repo precedent:
-# the staging/runner tag greps).
-check "coolify: marker warning present in the shipped script" 0 "" \
-  grep -q "not a control-plane box" "$ROOT/commands/coolify-install.sh"
-check "coolify backup: marker warning present in the shipped script" 0 "" \
-  grep -q "not a control-plane box" "$ROOT/commands/coolify-backup-install.sh"
-
 # --- rig db (ad-hoc dump/restore) -------------------------------------------
 check "bare db shows usage, exit 2"       2 "usage:" "$ROOT/bin/rig" db
 check "db --help exits 0"                 0 "usage:" "$ROOT/bin/rig" db --help
@@ -2698,20 +2609,6 @@ check "users close-root: no second copy of the privsep repair" 1 "" \
 # shellcheck disable=SC2016
 check "bootstrap: hardening runs through the shared lib" 0 "" \
   grep -qE '^harden_sshd "\$ROOT_DOOR"$' "$ROOT/commands/bootstrap.sh"
-
-# The dump script ships to control-plane boxes as an embedded heredoc. A syntax
-# error in it would be invisible here and would first surface at 04:00 on a live
-# control plane. Extract it and syntax-check what actually gets written.
-DUMP_TMP="$(mktemp)"
-sed -n "/<<'DUMP_SCRIPT'/,/^DUMP_SCRIPT\$/p" "$ROOT/commands/coolify-backup-install.sh" \
-  | sed '1d;$d' > "$DUMP_TMP"
-check "embedded dump script extracted (guards the sed above)" 0 "" grep -q "pg_dump" "$DUMP_TMP"
-check "embedded dump script is valid bash"    0 ""        bash -n "$DUMP_TMP"
-check "embedded dump script rejects a bare bucket name" 1 "must be an s3:// URI" \
-  env AGE_RECIPIENT=age1x S3_BUCKET=my-bucket S3_ENDPOINT=https://s3.example.com bash "$DUMP_TMP"
-check "embedded dump script rejects a schemeless endpoint" 1 "needs a scheme" \
-  env AGE_RECIPIENT=age1x S3_BUCKET=s3://b/k S3_ENDPOINT=s3.example.com bash "$DUMP_TMP"
-rm -f "$DUMP_TMP"
 
 # Regression: /etc/os-release defines VERSION (e.g. "13 (trixie)" on Debian);
 # sourcing it in the main shell clobbers a script's $VERSION and splices the
