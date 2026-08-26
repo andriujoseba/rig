@@ -4,7 +4,7 @@
 
 # The users file is line-based and whitespace-separated on purpose: a
 # rig-bootstrapped box has no YAML parser and no jq, and `read` parses this
-# shape for free — same jq-free reason runner-config.sh greps JSON. One line
+# shape for free — same jq-free reason netmap-json.sh greps JSON. One line
 # per key:
 #
 #   # user   roles          ssh public key
