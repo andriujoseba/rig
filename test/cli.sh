@@ -1621,12 +1621,12 @@ fi
 
 # --- retired command surface (#193) -----------------------------------------
 # This is deliberately a dispatch test, not just an absence grep: on the old
-# tree this command reached the status implementation and exited 0, while the retired
-# surface must take the same general-usage path as every unknown command.
+# tree this command reached the status implementation and exited 0, while the
+# retired surface must take the same general-usage path as every unknown command.
 check "removed surface: former status invocation uses general usage" \
   2 "usage: rig <command>" "$ROOT/bin/rig" runner status
-check "help omits the retired command family" 1 "" \
-  bash -c '"$1/bin/rig" --help | grep -q "^[[:space:]]*runner "' _ "$ROOT"
+help_has_retired_family() { "$ROOT/bin/rig" --help | grep -q '^[[:space:]]*runner '; }
+check "help omits the retired command family" 1 "" help_has_retired_family
 
 # --- headless prompts refuse loudly (issue #42) ------------------------------
 check "bootstrap: headless TS_AUTHKEY prompt refuses loudly" 0 "" \
