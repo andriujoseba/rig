@@ -827,9 +827,6 @@ if [ -n "$MACHINE_TEMPLATE_DIR" ] && [ -e "$MACHINE_TEMPLATE_DIR/install.sh" ]; 
 fi
 
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
-if [ "$ROLE" = "control-plane-server" ]; then
-  log "next: rig coolify install --version <pin>"
-fi
 # Every box gets operators: humans always enter as themselves and elevate via
 # sudo — a shared root login is unattributable. What differs, per the root-door
 # trait, is root SSH's fate once named users exist. With --users the accounts exist already, so

@@ -3,9 +3,8 @@
 #
 # Imperative on-box tooling, deliberately: this is the "I need a copy of that
 # database right now" / "put this artifact back" verb an operator reaches for by
-# hand. It is the counterpart to `coolify backup install`, which is the
-# scheduled, declarative, forensics-only path — this one is interactive, targets
-# any container, and (for restore) overwrites live data behind a confirm gate.
+# hand. It is interactive, targets any container, and (for restore) overwrites
+# live data behind a confirm gate.
 #
 # Two rules run through everything below and are non-negotiable:
 #   * $POSTGRES_USER / $POSTGRES_DB are read INSIDE the container (that is why
@@ -84,7 +83,7 @@ cmd_dump() {
   container="${pos[0]:-}"
   outfile="${pos[1]:-}"
   [ -n "$container" ] || die "dump needs a container name" 2
-  # Mirror coolify-dump.sh's timestamp style for the default name.
+  # Use a sortable UTC timestamp for the default name.
   [ -n "$outfile" ] || outfile="${container}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
 
   require_common_guards

@@ -8,9 +8,6 @@
   - changed-files:
       - any-glob-to-any-file:
           ["commands/users-*.sh", "commands/lib/users-config.sh"]
-"scope:coolify":
-  - changed-files:
-      - any-glob-to-any-file: ["commands/coolify-*.sh"]
 "scope:db":
   - changed-files:
       - any-glob-to-any-file: ["commands/db.sh", "test/db-integration.sh"]

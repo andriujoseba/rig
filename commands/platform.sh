@@ -119,9 +119,8 @@ fi
 # THE os-release TRAP: /etc/os-release defines VERSION, NAME and ID, so
 # sourcing it in the MAIN shell silently clobbers same-named script variables.
 # Every site in this tree sources it in a SUBSHELL instead (bootstrap.sh:305,
-# bootstrap-tenant.sh:126, db.sh:52,
-# coolify-backup-install.sh:88), and test/cli.sh greps commands/ to keep it
-# that way. Follow the form verbatim.
+# bootstrap-tenant.sh:126, db.sh:52), and test/cli.sh greps commands/ to keep
+# it that way. Follow the form verbatim.
 if [ -r /etc/os-release ]; then
   OS="$(. /etc/os-release && printf '%s %s' "${NAME:-}" "${VERSION:-${VERSION_ID:-}}")"
 else
