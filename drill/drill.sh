@@ -4,13 +4,12 @@
 #   ⚠ DESTRUCTIVE, AND MEANT TO BE. Run it on a THROWAWAY Debian machine you
 #     can format. It wipes any installed rig and reinstalls from the pinned
 #     ref, hardens sshd, sets the hostname, joins the tailnet, installs box
-#     and its Incus stack, and installs Coolify.
+#     and its Incus stack, and installs Docker for the db round-trip.
 #     Never run it on a machine you care about.
 #
 #   TS_AUTHKEY=tskey-... bash drill/drill.sh \
 #     --rig-ref release/0.4.0 --box-ref 0.9.0 \
-#     --users ./drill-users --run-id drill-2026-07-24-a \
-#     --coolify-version 4.1.2 --yes
+#     --users ./drill-users --run-id drill-2026-07-24-a --yes
 #   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
 # rig's drill asserts CONVERGENCE — a machine reaches its role, idempotently.
 # The legs (drills/README.md, issue #105):
@@ -21,11 +20,10 @@
 #      (the pinned box installed, its host stack stands — and it STOPS there;
 #      the isolation boundary is box's drill's assertion, not this one's).
 #   2. db — the real dump/restore round-trip, test/db-integration.sh.
-#   3. coolify install — at a pinned version, AUTOUPDATE=false.
 #
-# Execution order is 1, 3, 2 — coolify's installer is what puts Docker on the
-# box, and leg 2 needs a daemon; running db before coolify would skip a leg this
-# same run makes runnable. The record lists legs as they ran.
+# Execution order is 1, 2. The drill installs Debian's Docker package directly
+# before leg 2 so the db round-trip is real even on a pristine machine. Docker
+# provisioning is a prerequisite, not a rig surface or a separate evidence leg.
 #
 # Exit 0 = no check failed. A FAILED drill still emits a complete record —
 # the gate wants evidence, not success — and skipped legs are counted and
@@ -63,7 +61,6 @@ ROLE=staging-server
 USERS_FILE="${DRILL_USERS_FILE:-}"
 RUN_ID="${DRILL_RUN_ID:-drill-$(date -u +%F)}"
 RECORD="${DRILL_RECORD:-}"
-COOLIFY_VERSION="${DRILL_COOLIFY_VERSION:-}"
 YES=0
 
 while [ $# -gt 0 ]; do
@@ -77,7 +74,6 @@ while [ $# -gt 0 ]; do
     --users) USERS_FILE="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --record) RECORD="$2"; shift 2 ;;
-    --coolify-version) COOLIFY_VERSION="$2"; shift 2 ;;
     -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -327,7 +323,7 @@ if [ -z "$USERS_FILE" ]; then
 fi
 [ -r "$USERS_FILE" ] || { echo "drill: cannot read users file: $USERS_FILE" >&2; exit 2; }
 
-[ "$(id -u)" -eq 0 ] || { echo "drill: must run as root (bootstrap, coolify and db all require it) — ssh in as root on the throwaway machine" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo "drill: must run as root (bootstrap, Docker and db all require it) — ssh in as root on the throwaway machine" >&2; exit 1; }
 
 # The tailnet join needs a key unless this machine already joined (a re-drill
 # on the same throwaway). Caught here, not 10 apt-minutes into bootstrap.
@@ -347,7 +343,7 @@ This will, ON THIS HOST ($(hostname)):
   · run 'rig bootstrap $ROLE --users $USERS_FILE' — sshd hardening, hostname
     change, tailnet join, box ($BOXREPO@$BOXREF) + its Incus stack — TWICE
     (the second run is the idempotence assertion)
-  · install Coolify${COOLIFY_VERSION:+ $COOLIFY_VERSION}
+  · install Debian's Docker package for the database round-trip
 Only do this on a THROWAWAY machine you can format.
 EOF
   [ -t 0 ] || { echo "drill: no TTY to confirm on — pass --yes if you mean it." >&2; exit 2; }
@@ -531,30 +527,21 @@ case "$MARKER_LINE" in
 esac
 
 # =============================================================================
-phase "Leg 3 — coolify install (pinned, AUTOUPDATE=false)"
+phase "Preparing Docker for Leg 2"
 # =============================================================================
-# Runs BEFORE leg 2 on purpose: Coolify's installer is what puts Docker on the
-# box, and the db leg needs a daemon — ordering them the other way around
-# would manufacture a skip this same run could have avoided.
-if [ -z "$COOLIFY_VERSION" ]; then
-  skip "coolify install: no --coolify-version pin given — the leg did not run (rig's own install refuses to default a version, and so does its drill)"
-  leg "coolify install" "SKIPPED — no version pin provided"
+# The throwaway starts without Docker. Install the Debian-owned package
+# directly: this is drill scaffolding for the db evidence, not a rig command.
+if run_logged /tmp/drill-docker.log bash -c '
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y docker.io
+  systemctl enable --now docker
+'; then
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 \
+    && ok "Docker installed directly and the daemon answers" \
+    || no "Docker package installation exited 0 but the daemon does not answer"
 else
-  t0=$SECONDS
-  if run_logged /tmp/drill-coolify.log rig coolify install --version "$COOLIFY_VERSION"; then
-    ok "rig coolify install --version $COOLIFY_VERSION exited 0  ($((SECONDS - t0))s)"
-    grep -qx 'AUTOUPDATE=false' /data/coolify/source/.env 2>/dev/null \
-      && ok "AUTOUPDATE=false landed in /data/coolify/source/.env — the platform will not move under its operators" \
-      || no "AUTOUPDATE=false is NOT in coolify's .env — the pin is not holding"
-    cstate="$(docker inspect -f '{{.State.Status}}' coolify 2>/dev/null || echo absent)"
-    [ "$cstate" = running ] && ok "the coolify container is running" \
-                            || no "coolify container state: $cstate (expected running)"
-    leg "coolify install ($COOLIFY_VERSION)" \
-      "$([ "$cstate" = running ] && echo "PASS ($(((SECONDS - t0) / 60)) min)" || echo "FAIL — container $cstate")"
-  else
-    no "coolify install FAILED — tail: $(tail -3 /tmp/drill-coolify.log | tr '\n' ' ')"
-    leg "coolify install ($COOLIFY_VERSION)" "FAIL — installer exited non-zero"
-  fi
+  no "Docker prerequisite FAILED — tail: $(tail -3 /tmp/drill-docker.log | tr '\n' ' ')"
 fi
 
 # =============================================================================

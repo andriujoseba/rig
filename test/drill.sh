@@ -5,7 +5,7 @@
 # instrument itself: the refusals, the classifications, the capture-and-diff
 # that decides idempotence, and the record emitter — the parts whose lies
 # would be believed, months later, by a reader of drills/<version>.md. The
-# three-leg live run on a real Debian machine is #107's exercise, not this
+# two-leg live run on a real Debian machine is #107's exercise, not this
 # file's: nothing here needs root, Docker, a tailnet or the network.
 #
 # Extraction pattern is test/release.sh's: the functions under test are
@@ -163,9 +163,9 @@ emit() {   # emit <outfile> — emit_record with the harness globals staged
   bash -c '
     . "$1"
     pass=12 fail=1 skipped=1
-    findings=("FAIL: coolify container state: absent" "SKIP: db round-trip did not run — no Docker daemon" "NOTE: something worth a line")
-    LEG_NAMES=("convergence — bootstrap staging-server reaches its role" "re-converge (idempotence)" "coolify install (4.1.2)" "test/db-integration.sh")
-    LEG_RESULTS=("PASS (312s)" "clean, no changes" "FAIL — container absent" "SKIPPED — no Docker daemon")
+    findings=("FAIL: Docker prerequisite did not start" "SKIP: db round-trip did not run — no Docker daemon" "NOTE: something worth a line")
+    LEG_NAMES=("convergence — bootstrap staging-server reaches its role" "re-converge (idempotence)" "test/db-integration.sh")
+    LEG_RESULTS=("PASS (312s)" "clean, no changes" "SKIPPED — no Docker daemon")
     emit_record "$2"
   ' _ "$FNS" "$2"
 }
@@ -177,7 +177,7 @@ check "record: …box's too" 0 "box@1a2b3c4 (BOX_REF=release/0.4.0)" cat "$WORK/
 check "record: the template registry SHA and actual source ride alongside the pair (#110/#153)" 0 "rig-templates@9f8e7d6 (ref 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432, snapshot)" cat "$WORK/record.md"
 check "record: one table row per leg, result verbatim" 0 "| re-converge (idempotence) | clean, no changes |" cat "$WORK/record.md"
 check "record: the numbers, skips counted apart from passes" 0 "12 passed, 1 failed, 1 skipped" cat "$WORK/record.md"
-check "record: a FAILED run still names what failed (evidence, not success)" 0 "FAIL: coolify container state: absent" cat "$WORK/record.md"
+check "record: a FAILED run still names what failed (evidence, not success)" 0 "FAIL: Docker prerequisite did not start" cat "$WORK/record.md"
 check "record: a skipped leg is stated as NOT run, by name" 0 "SKIP: db round-trip" cat "$WORK/record.md"
 check "record: the skip section says the record is not evidence for it" 0 "not evidence" cat "$WORK/record.md"
 check "record: the isolation boundary is named as box's, in words" 0 "NOT asserted here" cat "$WORK/record.md"
@@ -206,17 +206,25 @@ check "an all-green record says every leg ran and passed" 0 "Every leg ran and e
 check "drill.sh refuses to run without BOTH refs pinned (#103)" 2 "--box-ref" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
 drill_help_has_retired_flag() { bash "$ROOT/drill/drill.sh" --help | grep -q -- '--runner-'; }
+drill_help_has_retired_coolify_flag() { bash "$ROOT/drill/drill.sh" --help | grep -q -- '--coolify-version'; }
 drill_leg_count() { grep -Ec '^phase "Leg [0-9]+' "${1:-$ROOT/drill/drill.sh}"; }
-DRILL_LEG_COUNT_FIXTURE="$WORK/four-numbered-legs.sh"
+docker_source_precedes_db() {
+  local docker_line db_line
+  docker_line="$(grep -nF 'apt-get install -y docker.io' "$ROOT/drill/drill.sh" | cut -d: -f1)"
+  db_line="$(grep -nF 'phase "Leg 2 — db dump/restore round-trip' "$ROOT/drill/drill.sh" | cut -d: -f1)"
+  [ -n "$docker_line" ] && [ -n "$db_line" ] && [ "$docker_line" -lt "$db_line" ]
+}
+DRILL_LEG_COUNT_FIXTURE="$WORK/three-numbered-legs.sh"
 printf '%s\n' \
   'phase "Leg 1 — one"' \
   'phase "Leg 2 — two"' \
-  'phase "Leg 3 — three"' \
-  'phase "Leg 4 — four"' > "$DRILL_LEG_COUNT_FIXTURE"
+  'phase "Leg 3 — three"' > "$DRILL_LEG_COUNT_FIXTURE"
 check "drill.sh help names no retired runner flag" 1 "" drill_help_has_retired_flag
-check "drill.sh runs exactly three numbered legs" 0 "3" drill_leg_count
-check "drill leg counter sees a synthetic fourth leg" 0 "4" \
+check "drill.sh help names no retired Coolify flag" 1 "" drill_help_has_retired_coolify_flag
+check "drill.sh runs exactly two numbered legs" 0 "2" drill_leg_count
+check "drill leg counter sees a synthetic third leg" 0 "3" \
   drill_leg_count "$DRILL_LEG_COUNT_FIXTURE"
+check "drill installs Docker directly before the db leg" 0 "" docker_source_precedes_db
 check "…and the refusal shows which ref is missing" 2 "<unset>" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
 check "a tenant role is refused — the drill converges machines, not guests" 2 "not a machine role" \
