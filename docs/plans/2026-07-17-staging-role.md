@@ -112,7 +112,7 @@ check "bootstrap: staging + removed --ts-tag exits 2" 2 "comes from the pre-auth
 # verify_effective_tag — a path that needs a real tailnet, so it belongs to the
 # rehearsal. What the harness CAN prove is that the refusal exists in the shipped
 # script: grep the die message, so a deleted guard cannot ship green (the same
-# reason the runner-install repo guard is grepped below).
+# reason adjacent runtime guards are grepped below).
 check "bootstrap: staging effective-tag refusal is present" 0 "" \
   grep -q "role staging joined with tag:server" "$ROOT/commands/bootstrap.sh"
 ```

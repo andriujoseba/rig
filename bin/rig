@@ -72,27 +72,6 @@ commands:
       go stale here. Writes nothing, needs no root, makes no network call,
       and therefore also runs on a pristine Debian box rig has never
       bootstrapped, where the provenance block reads 'not bootstrapped'.
-  runner install (--repo <owner/repo> | --org <org>) [--name <name>] [options]
-      GitHub Actions runner as a systemd service under an unprivileged
-      user — outbound-only, no Docker. A box runs any number of runners
-      and --name is the key; omit it and you get this host's name, or the
-      runner the box already has. Organization runners accept --runnergroup
-      (default: Default). Prompts for the short-lived registration token
-      (RUNNER_TOKEN env overrides). Run as root.
-  runner status [--name <name>] [--user <name>]
-      Every runner on this box: scope, target, group, dir, unit and whether
-      rig manages it — runners registered by hand are listed too. --name for
-      one in detail. Reads the box only — no token, no network call. Run as root.
-  runner remove [--name <name>|--all] [--local] [--user <name>]
-      Take the service down and deregister the runner. --name is required
-      where the box runs more than one; --all is the teardown. Prompts for
-      the short-lived removal token (RUNNER_REMOVE_TOKEN env overrides).
-      Run as root.
-  runner repoint (--repo <owner/repo> | --org <org>) [--name <name>] [options]
-      Move one runner to another repository or organization — deregister,
-      then re-register, reusing the binary already on the box. Organization
-      targets accept --runnergroup. --name is required where the box runs
-      more than one. Needs removal and registration tokens. Run as root.
   users apply --file <path>
       Converge named operator accounts from a declarative users file, on
       every class: groups by role (admin/rig/box), passwords locked always,
@@ -422,32 +401,6 @@ case "$cmd" in
   platform)
     shift
     exec "$ROOT/commands/platform.sh" "$@"
-    ;;
-  runner)
-    shift
-    sub="${1:-}"
-    case "$sub" in
-      install)
-        shift
-        exec "$ROOT/commands/runner-install.sh" "$@"
-        ;;
-      status)
-        shift
-        exec "$ROOT/commands/runner-status.sh" "$@"
-        ;;
-      remove)
-        shift
-        exec "$ROOT/commands/runner-remove.sh" "$@"
-        ;;
-      repoint)
-        shift
-        exec "$ROOT/commands/runner-repoint.sh" "$@"
-        ;;
-      *)
-        usage >&2
-        exit 2
-        ;;
-    esac
     ;;
   users)
     shift

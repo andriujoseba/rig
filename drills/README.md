@@ -48,8 +48,6 @@ rig's legs (#105; `drill/drill.sh` runs them):
   decided mechanically). On a host=yes role this is also what installs the
   pinned box and asserts its host stack stands.
 - `bash test/db-integration.sh` against a real Postgres on the machine
-- the GitHub runner lifecycle — register, take a job, deregister — against a
-  fork
 - a coolify install, pinned, `AUTOUPDATE=false`
 
 box and rig are **mutually recursive**: `rig bootstrap --host yes` installs box
@@ -112,7 +110,6 @@ Candidate refs: box@1a2b3c4 (BOX_REF=release/0.4.0), rig@5d6e7f8, cast@9a0b1c2.
 | re-converge (idempotence) | clean, no changes |
 | --host yes: pinned box installed, host stack up | PASS — box doctor clean |
 | `test/db-integration.sh` | PASS — 14 passed, 0 failed |
-| runner lifecycle against a fork | PASS — registered, took a job, deregistered clean |
 | coolify install (4.1.2) | PASS (6 min) |
 
 Failed: `rig users apply` left one revoked key in `authorized_keys`

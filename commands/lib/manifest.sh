@@ -4,7 +4,7 @@
 #
 # The file is `key=value`, one per line — not JSON, not YAML. Same constraint
 # stated three times in the tree already (lib/users-config.sh:6-12,
-# lib/runner-config.sh:6 and :24): a rig-bootstrapped box has no YAML parser
+# lib/netmap-json.sh): a rig-bootstrapped box has no YAML parser
 # and no jq, which is why json_field() is grep-and-sed. This is the one file
 # that must stay readable on the most broken machine in the fleet, so `read`
 # parses it for free.
@@ -23,8 +23,7 @@
 # commands may append their own provenance (runner_installed_at,
 # coolify_installed_at, box_version), subject to the same two rules: the EVENT
 # of installing something, never its current state, and never a secret. Same
-# law runner-install.sh:190 already states for `.rig-labels` — "box-local
-# metadata, never a credential."
+# law: box-local metadata, never a credential.
 
 # The schema version, an INTEGER, independent of the rig versions recorded in
 # the file. Bumped only when a key is REMOVED or REPURPOSED — adding a key is

@@ -14,10 +14,10 @@ runner_installed=0
 if [ -n "${RIG_RUNNER_DIR:-}" ]; then
   [ -e "$RIG_RUNNER_DIR/.runner" ] && runner_installed=1
 else
-  # Two levels, because a box runs any number of runners (#166): the legacy
-  # single-instance layout puts .runner in actions-runner/ itself, and every
-  # named instance puts it in actions-runner/<name>/. A glob that only knew
-  # the first would let undo proceed on a box with four registered runners.
+  # Two levels, because a box may carry multiple externally managed runners
+  # (#166): the legacy single-instance layout puts .runner in actions-runner/
+  # itself, and named instances put it in actions-runner/<name>/. A glob that
+  # only knew the first would let undo proceed with other runners registered.
   for runner_config in \
     /home/*/actions-runner/.runner /home/*/actions-runner/*/.runner \
     /root/actions-runner/.runner /root/actions-runner/*/.runner; do
@@ -27,7 +27,7 @@ else
     && runner_installed=1
 fi
 if [ "$runner_installed" -eq 1 ]; then
-  die "a GitHub runner is installed — run 'rig runner remove' first so undo does not leave a ghost runner in the repository"
+  die "a GitHub runner is installed — deregister it outside rig before retrying so undo does not leave a ghost runner in GitHub"
 fi
 
 join_by=""

@@ -5,7 +5,7 @@
 # instrument itself: the refusals, the classifications, the capture-and-diff
 # that decides idempotence, and the record emitter — the parts whose lies
 # would be believed, months later, by a reader of drills/<version>.md. The
-# four-leg live run on a real Debian machine is #107's exercise, not this
+# three-leg live run on a real Debian machine is #107's exercise, not this
 # file's: nothing here needs root, Docker, a tailnet or the network.
 #
 # Extraction pattern is test/release.sh's: the functions under test are
@@ -163,9 +163,9 @@ emit() {   # emit <outfile> — emit_record with the harness globals staged
   bash -c '
     . "$1"
     pass=12 fail=1 skipped=1
-    findings=("FAIL: coolify container state: absent" "SKIP: runner lifecycle: no --runner-repo fork given — the leg did not run" "NOTE: something worth a line")
-    LEG_NAMES=("convergence — bootstrap staging-server reaches its role" "re-converge (idempotence)" "coolify install (4.1.2)" "runner lifecycle")
-    LEG_RESULTS=("PASS (312s)" "clean, no changes" "FAIL — container absent" "SKIPPED — no fork provided")
+    findings=("FAIL: coolify container state: absent" "SKIP: db round-trip did not run — no Docker daemon" "NOTE: something worth a line")
+    LEG_NAMES=("convergence — bootstrap staging-server reaches its role" "re-converge (idempotence)" "coolify install (4.1.2)" "test/db-integration.sh")
+    LEG_RESULTS=("PASS (312s)" "clean, no changes" "FAIL — container absent" "SKIPPED — no Docker daemon")
     emit_record "$2"
   ' _ "$FNS" "$2"
 }
@@ -178,7 +178,7 @@ check "record: the template registry SHA and actual source ride alongside the pa
 check "record: one table row per leg, result verbatim" 0 "| re-converge (idempotence) | clean, no changes |" cat "$WORK/record.md"
 check "record: the numbers, skips counted apart from passes" 0 "12 passed, 1 failed, 1 skipped" cat "$WORK/record.md"
 check "record: a FAILED run still names what failed (evidence, not success)" 0 "FAIL: coolify container state: absent" cat "$WORK/record.md"
-check "record: a skipped leg is stated as NOT run, by name" 0 "SKIP: runner lifecycle" cat "$WORK/record.md"
+check "record: a skipped leg is stated as NOT run, by name" 0 "SKIP: db round-trip" cat "$WORK/record.md"
 check "record: the skip section says the record is not evidence for it" 0 "not evidence" cat "$WORK/record.md"
 check "record: the isolation boundary is named as box's, in words" 0 "NOT asserted here" cat "$WORK/record.md"
 refute "record with a skip cannot read as a clean sweep" "Failed: nothing" "$WORK/record.md"
@@ -205,6 +205,18 @@ check "an all-green record says every leg ran and passed" 0 "Every leg ran and e
 # which is what makes them provable here without a throwaway machine.
 check "drill.sh refuses to run without BOTH refs pinned (#103)" 2 "--box-ref" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
+drill_help_has_retired_flag() { bash "$ROOT/drill/drill.sh" --help | grep -q -- '--runner-'; }
+drill_leg_count() { grep -Ec '^phase "Leg [0-9]+' "${1:-$ROOT/drill/drill.sh}"; }
+DRILL_LEG_COUNT_FIXTURE="$WORK/four-numbered-legs.sh"
+printf '%s\n' \
+  'phase "Leg 1 — one"' \
+  'phase "Leg 2 — two"' \
+  'phase "Leg 3 — three"' \
+  'phase "Leg 4 — four"' > "$DRILL_LEG_COUNT_FIXTURE"
+check "drill.sh help names no retired runner flag" 1 "" drill_help_has_retired_flag
+check "drill.sh runs exactly three numbered legs" 0 "3" drill_leg_count
+check "drill leg counter sees a synthetic fourth leg" 0 "4" \
+  drill_leg_count "$DRILL_LEG_COUNT_FIXTURE"
 check "…and the refusal shows which ref is missing" 2 "<unset>" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
 check "a tenant role is refused — the drill converges machines, not guests" 2 "not a machine role" \

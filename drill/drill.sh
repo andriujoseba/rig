@@ -4,13 +4,13 @@
 #   ⚠ DESTRUCTIVE, AND MEANT TO BE. Run it on a THROWAWAY Debian machine you
 #     can format. It wipes any installed rig and reinstalls from the pinned
 #     ref, hardens sshd, sets the hostname, joins the tailnet, installs box
-#     and its Incus stack, installs Coolify and a GitHub Actions runner.
+#     and its Incus stack, and installs Coolify.
 #     Never run it on a machine you care about.
 #
 #   TS_AUTHKEY=tskey-... bash drill/drill.sh \
 #     --rig-ref release/0.4.0 --box-ref 0.9.0 \
 #     --users ./drill-users --run-id drill-2026-07-24-a \
-#     --coolify-version 4.1.2 --runner-repo you/rig --yes
+#     --coolify-version 4.1.2 --yes
 #   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
 # rig's drill asserts CONVERGENCE — a machine reaches its role, idempotently.
 # The legs (drills/README.md, issue #105):
@@ -21,12 +21,11 @@
 #      (the pinned box installed, its host stack stands — and it STOPS there;
 #      the isolation boundary is box's drill's assertion, not this one's).
 #   2. db — the real dump/restore round-trip, test/db-integration.sh.
-#   3. runner lifecycle — register, take a job, deregister, against a fork.
-#   4. coolify install — at a pinned version, AUTOUPDATE=false.
+#   3. coolify install — at a pinned version, AUTOUPDATE=false.
 #
-# Execution order is 1, 4, 2, 3 — coolify's installer is what puts Docker on
-# the box, and leg 2 needs a daemon; running db before coolify would skip a
-# leg this same run makes runnable. The record lists legs as they ran.
+# Execution order is 1, 3, 2 — coolify's installer is what puts Docker on the
+# box, and leg 2 needs a daemon; running db before coolify would skip a leg this
+# same run makes runnable. The record lists legs as they ran.
 #
 # Exit 0 = no check failed. A FAILED drill still emits a complete record —
 # the gate wants evidence, not success — and skipped legs are counted and
@@ -65,8 +64,6 @@ USERS_FILE="${DRILL_USERS_FILE:-}"
 RUN_ID="${DRILL_RUN_ID:-drill-$(date -u +%F)}"
 RECORD="${DRILL_RECORD:-}"
 COOLIFY_VERSION="${DRILL_COOLIFY_VERSION:-}"
-RUNNER_REPO="${DRILL_RUNNER_REPO:-}"
-RUNNER_WORKFLOW="${DRILL_RUNNER_WORKFLOW:-drill.yml}"
 YES=0
 
 while [ $# -gt 0 ]; do
@@ -81,8 +78,6 @@ while [ $# -gt 0 ]; do
     --run-id) RUN_ID="$2"; shift 2 ;;
     --record) RECORD="$2"; shift 2 ;;
     --coolify-version) COOLIFY_VERSION="$2"; shift 2 ;;
-    --runner-repo) RUNNER_REPO="$2"; shift 2 ;;
-    --runner-workflow) RUNNER_WORKFLOW="$2"; shift 2 ;;
     -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "drill: unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -332,7 +327,7 @@ if [ -z "$USERS_FILE" ]; then
 fi
 [ -r "$USERS_FILE" ] || { echo "drill: cannot read users file: $USERS_FILE" >&2; exit 2; }
 
-[ "$(id -u)" -eq 0 ] || { echo "drill: must run as root (bootstrap, runner, coolify and db all require it) — ssh in as root on the throwaway machine" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo "drill: must run as root (bootstrap, coolify and db all require it) — ssh in as root on the throwaway machine" >&2; exit 1; }
 
 # The tailnet join needs a key unless this machine already joined (a re-drill
 # on the same throwaway). Caught here, not 10 apt-minutes into bootstrap.
@@ -352,7 +347,7 @@ This will, ON THIS HOST ($(hostname)):
   · run 'rig bootstrap $ROLE --users $USERS_FILE' — sshd hardening, hostname
     change, tailnet join, box ($BOXREPO@$BOXREF) + its Incus stack — TWICE
     (the second run is the idempotence assertion)
-  · install Coolify${COOLIFY_VERSION:+ $COOLIFY_VERSION} and a GitHub runner${RUNNER_REPO:+ against $RUNNER_REPO}
+  · install Coolify${COOLIFY_VERSION:+ $COOLIFY_VERSION}
 Only do this on a THROWAWAY machine you can format.
 EOF
   [ -t 0 ] || { echo "drill: no TTY to confirm on — pass --yes if you mean it." >&2; exit 2; }
@@ -536,7 +531,7 @@ case "$MARKER_LINE" in
 esac
 
 # =============================================================================
-phase "Leg 4 — coolify install (pinned, AUTOUPDATE=false)"
+phase "Leg 3 — coolify install (pinned, AUTOUPDATE=false)"
 # =============================================================================
 # Runs BEFORE leg 2 on purpose: Coolify's installer is what puts Docker on the
 # box, and the db leg needs a daemon — ordering them the other way around
@@ -589,106 +584,6 @@ case "$(classify_leg "$db_rc" "$db_out")" in
     ;;
 esac
 rm -f "$db_out"
-
-# =============================================================================
-phase "Leg 3 — runner lifecycle against a fork"
-# =============================================================================
-# Register, take a job, deregister. The fork must carry a workflow_dispatch
-# workflow (default drill.yml) whose job runs-on the 'drill' label — see
-# drill/README.md. Tokens: RUNNER_TOKEN / RUNNER_REMOVE_TOKEN env, or minted
-# via an authenticated gh. Without a fork or a token source the leg SKIPS,
-# loudly, and the record says it did not run.
-if [ -z "$RUNNER_REPO" ]; then
-  skip "runner lifecycle: no --runner-repo fork given — the leg did not run"
-  leg "runner lifecycle" "SKIPPED — no fork provided"
-else
-  GH_OK=0
-  command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && GH_OK=1
-  reg_token="${RUNNER_TOKEN:-}"
-  if [ -z "$reg_token" ] && [ "$GH_OK" -eq 1 ]; then
-    reg_token="$(gh api -X POST "repos/$RUNNER_REPO/actions/runners/registration-token" --jq .token 2>/dev/null)"
-  fi
-  if [ -z "$reg_token" ]; then
-    skip "runner lifecycle: no RUNNER_TOKEN and no authenticated gh to mint one — the leg did not run"
-    leg "runner lifecycle ($RUNNER_REPO)" "SKIPPED — no registration token source"
-  else
-    RUNNER_NAME="drill-$(hostname)-$$"
-    if RUNNER_TOKEN="$reg_token" run_logged /tmp/drill-runner-install.log \
-         rig runner install --repo "$RUNNER_REPO" --name "$RUNNER_NAME" --labels drill; then
-      ok "rig runner install --repo $RUNNER_REPO exited 0 (registered as $RUNNER_NAME)"
-    else
-      no "runner install FAILED — tail: $(tail -3 /tmp/drill-runner-install.log | tr '\n' ' ')"
-    fi
-    rig runner status 2>/dev/null | grep -q "$RUNNER_REPO" \
-      && ok "runner status names the fork: $RUNNER_REPO" \
-      || no "runner status does not name $RUNNER_REPO"
-
-    took_job=none
-    if [ "$GH_OK" -eq 1 ]; then
-      # Dispatch, then poll the newest run of that workflow to completion.
-      # The newest run's ID is read BEFORE dispatching, so an old completed
-      # run can never be mistaken for the one just dispatched (the poll's
-      # verdict must be about OUR run, and workflow_dispatch takes a few
-      # seconds to materialize a run at all). ~5 min bound: a queued-forever
-      # run means the runner never picked the job up, which is exactly what
-      # this check exists to catch.
-      pre_id="$(gh run list -R "$RUNNER_REPO" --workflow "$RUNNER_WORKFLOW" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null)"
-      if gh workflow run "$RUNNER_WORKFLOW" -R "$RUNNER_REPO" >/dev/null 2>&1; then
-        inf "dispatched $RUNNER_WORKFLOW on $RUNNER_REPO — waiting for the runner to take it (≤5 min)…"
-        took_job=timeout
-        for _i in $(seq 1 30); do
-          sleep 10
-          run_line="$(gh run list -R "$RUNNER_REPO" --workflow "$RUNNER_WORKFLOW" --limit 1 \
-            --json databaseId,status,conclusion --jq '.[0] | "\(.databaseId) \(.status) \(.conclusion)"' 2>/dev/null)"
-          read -r rid rstatus rconc <<< "$run_line"
-          [ -n "${rid:-}" ] || continue
-          [ "$rid" != "${pre_id:-}" ] || continue
-          if [ "${rstatus:-}" = completed ]; then
-            case "${rconc:-}" in
-              success) took_job=success ;;
-              *) took_job=failed ;;
-            esac
-            break
-          fi
-        done
-      else
-        took_job=nodispatch
-      fi
-      case "$took_job" in
-        success) ok "the runner took a job and it succeeded ($RUNNER_WORKFLOW)" ;;
-        failed)  no "the dispatched job completed UNSUCCESSFULLY — the runner ran it, the workflow failed; read the run on $RUNNER_REPO" ;;
-        timeout) no "the dispatched job never completed within 5 min — the runner did not take it (is the workflow's runs-on label 'drill'?)" ;;
-        nodispatch) no "could not dispatch $RUNNER_WORKFLOW on $RUNNER_REPO — does the fork carry it, with workflow_dispatch? (see drill/README.md)" ;;
-      esac
-    else
-      skip "took a job: not attempted — no authenticated gh to dispatch $RUNNER_WORKFLOW with"
-    fi
-
-    rem_token="${RUNNER_REMOVE_TOKEN:-}"
-    if [ -z "$rem_token" ] && [ "$GH_OK" -eq 1 ]; then
-      rem_token="$(gh api -X POST "repos/$RUNNER_REPO/actions/runners/remove-token" --jq .token 2>/dev/null)"
-    fi
-    if [ -n "$rem_token" ]; then
-      RUNNER_REMOVE_TOKEN="$rem_token" rig runner remove >/dev/null 2>&1 \
-        && ok "rig runner remove deregistered cleanly" \
-        || no "runner remove FAILED"
-    else
-      rig runner remove --local >/dev/null 2>&1 \
-        && note "deregistered --local only (no removal token source) — delete the stale runner from $RUNNER_REPO's settings by hand" \
-        || no "runner remove --local FAILED"
-    fi
-    rig runner status >/dev/null 2>&1 \
-      && no "runner status still answers after remove — the deregistration did not take" \
-      || ok "runner status confirms: nothing registered"
-
-    leg "runner lifecycle ($RUNNER_REPO)" \
-      "$(case "$took_job" in
-           success) echo "PASS — registered, took a job, deregistered clean" ;;
-           none)    echo "PARTIAL — registered and deregistered; took a job: not attempted (no gh)" ;;
-           *)       echo "FAIL — see Failed below" ;;
-         esac)"
-  fi
-fi
 
 # =============================================================================
 phase "Summary"
