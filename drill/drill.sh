@@ -63,6 +63,37 @@ RUN_ID="${DRILL_RUN_ID:-drill-$(date -u +%F)}"
 RECORD="${DRILL_RECORD:-}"
 YES=0
 
+usage() {
+  cat <<'EOF'
+drill/drill.sh — rig's release drill: the instrument behind drills/README.md.
+
+  ⚠ DESTRUCTIVE, AND MEANT TO BE. Run it on a THROWAWAY Debian machine you
+    can format. It wipes any installed rig and reinstalls from the pinned
+    ref, hardens sshd, sets the hostname, joins the tailnet, installs box
+    and its Incus stack, and installs Docker for the db round-trip.
+    Never run it on a machine you care about.
+
+  TS_AUTHKEY=tskey-... bash <(curl -fsSL \
+    https://raw.githubusercontent.com/heavy-duty/rig/release/0.4.0/drill/drill.sh) \
+    --rig-repo heavy-duty/rig --rig-ref release/0.4.0 --box-ref 0.9.0 \
+    --users-from-github danmt --run-id drill-2026-07-24-a --yes
+  (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
+
+Options:
+  --rig-repo <owner/repo>       rig repository (default: heavy-duty/rig)
+  --rig-ref <ref>               required candidate branch or tag
+  --box-repo <owner/repo>       box repository (default: heavy-duty/box)
+  --box-ref <tag>               required box release tag
+  --role <machine-role>         role to converge (default: staging-server)
+  --users <path>                existing rig users ledger
+  --users-from-github <handle>  render an admin,box ledger from public keys
+  --run-id <id>                 shared drill run ID
+  --record <path>               record destination
+  --yes, -y                     skip the destructive confirmation
+  --help, -h                    show this help
+EOF
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) YES=1; shift ;;
@@ -75,7 +106,7 @@ while [ $# -gt 0 ]; do
     --users-from-github) USERS_FROM_GITHUB="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --record) RECORD="$2"; shift 2 ;;
-    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "drill: unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -353,6 +384,10 @@ fi
   [[ "$USERS_FROM_GITHUB" == "${USERS_FROM_GITHUB,,}" &&
      "$USERS_FROM_GITHUB" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || {
     echo "drill: --users-from-github must also be a valid rig username (lowercase letter or '_', then lowercase letters, digits, '_' or '-'; max 32)" >&2
+    exit 2
+  }
+  [ "$USERS_FROM_GITHUB" != root ] || {
+    echo "drill: --users-from-github root is reserved and cannot be an operator; use --users <path> with a non-root operator" >&2
     exit 2
   }
 }

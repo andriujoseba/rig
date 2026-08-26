@@ -59,8 +59,8 @@ No checkout is needed. Serve the instrument and the candidate from the same
 repo/ref pair:
 
 ```sh
-RIG_REPO=andriujoseba/rig
-RIG_REF=build/195-one-command-drill
+RIG_REPO=heavy-duty/rig
+RIG_REF=release/0.4.0
 TS_AUTHKEY=tskey-... bash <(curl -fsSL \
   "https://raw.githubusercontent.com/$RIG_REPO/$RIG_REF/drill/drill.sh") \
   --rig-repo "$RIG_REPO" --rig-ref "$RIG_REF" --box-ref 0.9.0 \

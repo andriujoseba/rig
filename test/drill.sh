@@ -222,6 +222,9 @@ drill_help_has_retired_coolify_flag() { bash "$ROOT/drill/drill.sh" --help | gre
 drill_help_spills_internal_commentary() {
   bash "$ROOT/drill/drill.sh" --help | grep -q "probe && ok"
 }
+drill_process_substitution_help() {
+  bash <(cat "$ROOT/drill/drill.sh") --help
+}
 drill_leg_count() { grep -Ec '^phase "Leg [0-9]+' "${1:-$ROOT/drill/drill.sh}"; }
 docker_source_precedes_db() {
   local docker_line db_line
@@ -237,6 +240,8 @@ printf '%s\n' \
 check "drill.sh help names no retired runner flag" 1 "" drill_help_has_retired_flag
 check "drill.sh help names no retired Coolify flag" 1 "" drill_help_has_retired_coolify_flag
 check "drill.sh help ends before internal commentary" 1 "" drill_help_spills_internal_commentary
+check "drill.sh help works through process substitution" 0 "THROWAWAY" \
+  drill_process_substitution_help
 check "drill.sh runs exactly two numbered legs" 0 "2" drill_leg_count
 check "drill leg counter sees a synthetic third leg" 0 "3" \
   drill_leg_count "$DRILL_LEG_COUNT_FIXTURE"
@@ -253,6 +258,8 @@ check "an unreadable users file dies before anything is spent" 2 "cannot read us
   bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users "$WORK/no-such-users" --yes
 check "a GitHub users handle must also be a valid rig username" 2 "valid rig username" \
   bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users-from-github BadHandle --yes
+check "root is refused as a GitHub-derived operator during pre-flight" 2 "root is reserved" \
+  bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users-from-github root --yes
 check "a PR ref is refused before install and names the fork-branch form" 2 "fork branch" \
   bash "$ROOT/drill/drill.sh" --rig-ref refs/pull/191/head --box-ref b --users "$WORK/no-such-users" --yes
 check "a non-admin SUDO_USER is refused before its users source is read" 2 "incus exec <box> -- bash -l" \
