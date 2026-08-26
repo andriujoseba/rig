@@ -154,7 +154,7 @@ TENANT_USER="${TENANT_USER_OVERRIDE:-$TPL_USER}"
 # marker is a tailnet machine rig built on purpose, and quietly turning it into
 # a tenant (or clobbering its marker) is how a fleet box gets poisoned. Checked
 # BEFORE the root check so the refusals are testable non-root, off fixture
-# markers (repo precedent: the coolify marker warning). The unconditional
+# markers (repo precedent: close-root's marker gate). The unconditional
 # host=yes refusal already ran before registry resolution. What remains is one
 # definition-driven refusal and one tolerance:
 #   - a root-door policy (agent tenants) → refuse: an agent box is never a

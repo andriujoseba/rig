@@ -154,7 +154,7 @@ valid_version() {
 # changes what a re-converge would do, which is worth a warning, not a
 # refusal: there is no user state a flip can strand, and flipping versions on
 # a bootstrapped host is the normal upgrade. RIG_ROLE_MARKER overrides the
-# path so tests point it at fixtures (repo precedent: the coolify marker
+# path so tests point it at fixtures (repo precedent: close-root's marker
 # gate). install.sh carries a byte-identical copy; test/cli.sh diffs the two.
 warn_bootstrapped() {   # $1 = what is about to happen
   local marker="${RIG_ROLE_MARKER:-/etc/rig/role}"
