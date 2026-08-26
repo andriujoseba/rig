@@ -207,6 +207,9 @@ check "drill.sh refuses to run without BOTH refs pinned (#103)" 2 "--box-ref" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
 drill_help_has_retired_flag() { bash "$ROOT/drill/drill.sh" --help | grep -q -- '--runner-'; }
 drill_help_has_retired_coolify_flag() { bash "$ROOT/drill/drill.sh" --help | grep -q -- '--coolify-version'; }
+drill_help_spills_internal_commentary() {
+  bash "$ROOT/drill/drill.sh" --help | grep -q "probe && ok"
+}
 drill_leg_count() { grep -Ec '^phase "Leg [0-9]+' "${1:-$ROOT/drill/drill.sh}"; }
 docker_source_precedes_db() {
   local docker_line db_line
@@ -221,6 +224,7 @@ printf '%s\n' \
   'phase "Leg 3 — three"' > "$DRILL_LEG_COUNT_FIXTURE"
 check "drill.sh help names no retired runner flag" 1 "" drill_help_has_retired_flag
 check "drill.sh help names no retired Coolify flag" 1 "" drill_help_has_retired_coolify_flag
+check "drill.sh help ends before internal commentary" 1 "" drill_help_spills_internal_commentary
 check "drill.sh runs exactly two numbered legs" 0 "2" drill_leg_count
 check "drill leg counter sees a synthetic third leg" 0 "3" \
   drill_leg_count "$DRILL_LEG_COUNT_FIXTURE"
