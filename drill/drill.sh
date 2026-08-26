@@ -7,9 +7,10 @@
 #     and its Incus stack, and installs Docker for the db round-trip.
 #     Never run it on a machine you care about.
 #
-#   TS_AUTHKEY=tskey-... bash drill/drill.sh \
-#     --rig-ref release/0.4.0 --box-ref 0.9.0 \
-#     --users ./drill-users --run-id drill-2026-07-24-a --yes
+#   TS_AUTHKEY=tskey-... bash <(curl -fsSL \
+#     https://raw.githubusercontent.com/heavy-duty/rig/release/0.4.0/drill/drill.sh) \
+#     --rig-repo heavy-duty/rig --rig-ref release/0.4.0 --box-ref 0.9.0 \
+#     --users-from-github danmt --run-id drill-2026-07-24-a --yes
 #   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
 # rig's drill asserts CONVERGENCE — a machine reaches its role, idempotently.
 # The legs (drills/README.md, issue #105):
@@ -41,9 +42,6 @@
 # alone. (box drill/drill.sh's header, the discipline #105 prescribes.)
 set -u
 
-SELF="$(readlink -f "$0")"
-ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
-
 REPO="${RIG_REPO:-heavy-duty/rig}"
 REF="${RIG_REF:-}"
 BOXREPO="${BOX_REPO:-heavy-duty/box}"
@@ -59,6 +57,8 @@ TPL_SHA=""
 TPL_SOURCE="fetched"
 ROLE=staging-server
 USERS_FILE="${DRILL_USERS_FILE:-}"
+USERS_FROM_GITHUB=""
+GENERATED_USERS_FILE=""
 RUN_ID="${DRILL_RUN_ID:-drill-$(date -u +%F)}"
 RECORD="${DRILL_RECORD:-}"
 YES=0
@@ -72,6 +72,7 @@ while [ $# -gt 0 ]; do
     --box-ref) BOXREF="$2"; shift 2 ;;
     --role) ROLE="$2"; shift 2 ;;
     --users) USERS_FILE="$2"; shift 2 ;;
+    --users-from-github) USERS_FROM_GITHUB="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --record) RECORD="$2"; shift 2 ;;
     -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -249,6 +250,26 @@ ref_sha() {
   printf '%s' "${sha:0:7}"
 }
 
+# default_record_path <version> — independent of the instrument's location:
+# a curl-piped script has no checkout whose drills/ directory could own it.
+default_record_path() {
+  printf '/root/drills/%s.md' "$1"
+}
+
+# render_github_users <handle> — turn github.com/<handle>.keys on stdin into
+# rig's ledger format. Every key grants the same operator roles by design.
+render_github_users() {
+  local user="$1"
+  awk -v user="$user" 'NF && $1 !~ /^#/ { print user, "admin,box", $0 }'
+}
+
+# publish_record <path> — the final stdout payload: where the record lives,
+# followed by the complete paste-ready record and nothing after it.
+publish_record() {
+  printf '\n        record written: %s\n\n' "$1"
+  cat "$1"
+}
+
 # emit_record <path> — drills/<version>.md, in the shape drills/README.md
 # defines: what ran, on what host, the pinned refs and SHAs, the numbers, and
 # what failed. Emitted on EVERY completed run — a failed drill is still a
@@ -312,16 +333,40 @@ if [ -z "$REF" ] || [ -z "$BOXREF" ]; then
   exit 2
 fi
 
+case "$REF" in
+  refs/pull/*)
+    echo "drill: --rig-ref cannot be a refs/pull/... ref — raw and archive URLs do not resolve GitHub PR refs. Push the candidate to a fork branch and pass that branch name with --rig-repo <fork-owner/rig> --rig-ref <branch>." >&2
+    exit 2 ;;
+esac
+
 case "$ROLE" in
   staging-server|dev-server|control-plane-server|workload-server|runner-server) ;;
   *) echo "drill: --role $ROLE is not a machine role this drill can converge unattended" >&2; exit 2 ;;
 esac
 
-if [ -z "$USERS_FILE" ]; then
-  echo "drill: --users <path> is required — leg 1 asserts operators converged, and bootstrap requires the file (its --no-users opt-out would leave leg 1 asserting nothing)" >&2
+if { [ -n "$USERS_FILE" ] && [ -n "$USERS_FROM_GITHUB" ]; } ||
+   { [ -z "$USERS_FILE" ] && [ -z "$USERS_FROM_GITHUB" ]; }; then
+  echo "drill: exactly one of --users <path> or --users-from-github <handle> is required — leg 1 asserts operators converged" >&2
   exit 2
 fi
-[ -r "$USERS_FILE" ] || { echo "drill: cannot read users file: $USERS_FILE" >&2; exit 2; }
+[ -z "$USERS_FROM_GITHUB" ] || {
+  [[ "$USERS_FROM_GITHUB" == "${USERS_FROM_GITHUB,,}" &&
+     "$USERS_FROM_GITHUB" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || {
+    echo "drill: --users-from-github must also be a valid rig username (lowercase letter or '_', then lowercase letters, digits, '_' or '-'; max 32)" >&2
+    exit 2
+  }
+}
+
+# `box shell` preserves SUDO_USER even though the effective uid is root. The
+# users family correctly refuses identity changes from a non-admin invoker, so
+# catch that entry-path trap before fetching keys or spending a tailnet key.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
+    && ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx rig-admin; then
+  echo "drill: SUDO_USER=$SUDO_USER is not in rig-admin, so bootstrap's users phase will refuse. Enter with 'incus exec <box> -- bash -l' or unset SUDO_USER before running the drill." >&2
+  exit 2
+fi
+
+[ -z "$USERS_FILE" ] || [ -r "$USERS_FILE" ] || { echo "drill: cannot read users file: $USERS_FILE" >&2; exit 2; }
 
 [ "$(id -u)" -eq 0 ] || { echo "drill: must run as root (bootstrap, Docker and db all require it) — ssh in as root on the throwaway machine" >&2; exit 1; }
 
@@ -335,6 +380,18 @@ if [ -z "${TS_AUTHKEY:-}" ]; then
 fi
 
 command -v curl >/dev/null 2>&1 || { echo "drill: curl is required (the pinned installs download over it)" >&2; exit 1; }
+
+if [ -n "$USERS_FROM_GITHUB" ]; then
+  GENERATED_USERS_FILE="$(mktemp)"
+  trap 'rm -f "$GENERATED_USERS_FILE"' EXIT
+  if ! GITHUB_KEYS="$(curl -fsSL "https://github.com/$USERS_FROM_GITHUB.keys")"; then
+    echo "drill: could not fetch public keys from https://github.com/$USERS_FROM_GITHUB.keys" >&2
+    exit 2
+  fi
+  printf '%s\n' "$GITHUB_KEYS" | render_github_users "$USERS_FROM_GITHUB" > "$GENERATED_USERS_FILE"
+  [ -s "$GENERATED_USERS_FILE" ] || { echo "drill: GitHub user $USERS_FROM_GITHUB has no public SSH keys" >&2; exit 2; }
+  USERS_FILE="$GENERATED_USERS_FILE"
+fi
 
 if [ "$YES" -ne 1 ]; then
   cat <<EOF
@@ -400,7 +457,7 @@ elif [ -n "$TPLREF" ]; then
   TPL_SHA="$(ref_sha "$TPLREPO" "$TPLREF")"
 fi
 inf "templates: $TPLREPO@${TPLREF:-unresolved} (${TPL_SHA:-unresolved}, $TPL_SOURCE)"
-[ -n "$RECORD" ] || RECORD="$ROOT/drills/$DRILL_VERSION.md"
+[ -n "$RECORD" ] || RECORD="$(default_record_path "$DRILL_VERSION")"
 
 # =============================================================================
 phase "Leg 1 — convergence: rig bootstrap $ROLE"
@@ -583,8 +640,5 @@ fi
 
 mkdir -p "$(dirname "$RECORD")"
 emit_record "$RECORD"
-echo
-inf "record written: $RECORD"
-inf "commit it on the release branch as drills/$DRILL_VERSION.md — the"
-inf "drill-recorded gate reads that file and nothing else (drills/README.md)."
+publish_record "$RECORD"
 [ "$fail" -eq 0 ]

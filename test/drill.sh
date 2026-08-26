@@ -50,10 +50,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- the functions under test, extracted -------------------------------------
 FNS="$WORK/drill-fns.sh"
-for fn in tree_of assert_installed_from classify_leg capture_state emit_record; do
+for fn in tree_of assert_installed_from classify_leg capture_state default_record_path render_github_users publish_record emit_record; do
   awk "/^${fn}\(\) \{/,/^\}/" "$ROOT/drill/drill.sh" >> "$FNS"
 done
-for fn in tree_of assert_installed_from classify_leg capture_state emit_record; do
+for fn in tree_of assert_installed_from classify_leg capture_state default_record_path render_github_users publish_record emit_record; do
   check "extraction guards the awk: ${fn}() landed" 0 "${fn}() {" grep -F "${fn}() {" "$FNS"
 done
 # shellcheck source=/dev/null
@@ -197,6 +197,18 @@ bash -c '
 ' _ "$FNS" "$WORK/record-green.md"
 check "an all-green record says every leg ran and passed" 0 "Every leg ran and every check passed" \
   cat "$WORK/record-green.md"
+check "the default record path is independent of a checkout" 0 "/root/drills/9.9.9.md" \
+  default_record_path 9.9.9
+printf 'ssh-ed25519 AAAAone dan@laptop\nssh-ed25519 AAAAtwo dan@desktop\n' > "$WORK/github.keys"
+# The positional parameters belong to the child bash, intentionally.
+# shellcheck disable=SC2016
+check "GitHub keys render one admin,box ledger line per key" 0 "danmt admin,box ssh-ed25519 AAAAtwo" \
+  bash -c '. "$1"; render_github_users danmt < "$2"' _ "$FNS" "$WORK/github.keys"
+publish_record "$WORK/record-green.md" > "$WORK/published-record"
+check "the final record payload prints its path" 0 "record written: $WORK/record-green.md" \
+  cat "$WORK/published-record"
+check "the final record payload includes the full record" 0 "Every leg ran and every check passed" \
+  cat "$WORK/published-record"
 
 # =============================================================================
 # the shipped script itself
@@ -233,10 +245,20 @@ check "…and the refusal shows which ref is missing" 2 "<unset>" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
 check "a tenant role is refused — the drill converges machines, not guests" 2 "not a machine role" \
   bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --role claude-box --yes
-check "no --users is a refusal, naming why the drill will not default it" 2 "--users <path> is required" \
+check "no users source is a refusal" 2 "exactly one of --users <path> or --users-from-github <handle>" \
   bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --yes
+check "both users sources are refused" 2 "exactly one of --users <path> or --users-from-github <handle>" \
+  bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users "$WORK/no-such-users" --users-from-github danmt --yes
 check "an unreadable users file dies before anything is spent" 2 "cannot read users file" \
   bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users "$WORK/no-such-users" --yes
+check "a GitHub users handle must also be a valid rig username" 2 "valid rig username" \
+  bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users-from-github BadHandle --yes
+check "a PR ref is refused before install and names the fork-branch form" 2 "fork branch" \
+  bash "$ROOT/drill/drill.sh" --rig-ref refs/pull/191/head --box-ref b --users "$WORK/no-such-users" --yes
+check "a non-admin SUDO_USER is refused before its users source is read" 2 "incus exec <box> -- bash -l" \
+  env SUDO_USER=dev bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users "$WORK/no-such-users" --yes
+check "the SUDO_USER refusal also names the environment fix" 2 "unset SUDO_USER" \
+  env SUDO_USER=dev bash "$ROOT/drill/drill.sh" --rig-ref r --box-ref b --users "$WORK/no-such-users" --yes
 check "an unknown flag dies loudly, exit 2" 2 "unknown option" \
   bash "$ROOT/drill/drill.sh" --frobnicate
 check "--help prints the header and exits 0" 0 "THROWAWAY" \
