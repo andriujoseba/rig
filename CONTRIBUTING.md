@@ -105,6 +105,12 @@ the box↔rig recursion, the per-version record files, the waiver rule — is
 [`drills/README.md`](drills/README.md); the `drill-recorded` guard enforces
 the record on every release tree.
 
+The builder runs the drill when they have a genuine fresh Debian host or VM;
+otherwise the operator runs it. An operator posts the instrument's complete
+final stdout on the release issue, and the builder copies that attributed
+record into `drills/<version>.md` on the release branch. A builder session
+already inside a box never runs the host drill there.
+
 ## Labels — who sets what
 
 The taxonomy and state machine are
