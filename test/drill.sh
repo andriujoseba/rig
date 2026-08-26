@@ -206,9 +206,17 @@ check "an all-green record says every leg ran and passed" 0 "Every leg ran and e
 check "drill.sh refuses to run without BOTH refs pinned (#103)" 2 "--box-ref" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
 drill_help_has_retired_flag() { bash "$ROOT/drill/drill.sh" --help | grep -q -- '--runner-'; }
-drill_leg_count() { grep -c '^phase "Leg [123]' "$ROOT/drill/drill.sh"; }
+drill_leg_count() { grep -Ec '^phase "Leg [0-9]+' "${1:-$ROOT/drill/drill.sh}"; }
+DRILL_LEG_COUNT_FIXTURE="$WORK/four-numbered-legs.sh"
+printf '%s\n' \
+  'phase "Leg 1 — one"' \
+  'phase "Leg 2 — two"' \
+  'phase "Leg 3 — three"' \
+  'phase "Leg 4 — four"' > "$DRILL_LEG_COUNT_FIXTURE"
 check "drill.sh help names no retired runner flag" 1 "" drill_help_has_retired_flag
 check "drill.sh runs exactly three numbered legs" 0 "3" drill_leg_count
+check "drill leg counter sees a synthetic fourth leg" 0 "4" \
+  drill_leg_count "$DRILL_LEG_COUNT_FIXTURE"
 check "…and the refusal shows which ref is missing" 2 "<unset>" \
   env -u RIG_REF -u BOX_REF bash "$ROOT/drill/drill.sh" --rig-ref release/9.9.9 --yes
 check "a tenant role is refused — the drill converges machines, not guests" 2 "not a machine role" \

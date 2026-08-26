@@ -293,7 +293,8 @@ check "rig help: bootstrap --undo advertises the installed-runner refusal" \
 rm -f "$UNDO_RUNNER/.runner"
 check "bootstrap --undo: failed logout is loud" \
   1 "role marker kept" env TAILSCALE_LOGOUT_FAIL=1 PATH="$UNDO_BIN:$PATH" \
-    UNDO_CALLS="$UNDO_CALLS" RIG_ROLE_MARKER="$UNDO_MARKER" "$ROOT/bin/rig" bootstrap --undo
+    UNDO_CALLS="$UNDO_CALLS" RIG_ROLE_MARKER="$UNDO_MARKER" \
+    RIG_RUNNER_DIR="$UNDO_RUNNER" "$ROOT/bin/rig" bootstrap --undo
 check "bootstrap --undo: failed logout preserves the marker" 0 "" test -e "$UNDO_MARKER"
 : > "$UNDO_CALLS"
 check "bootstrap --undo: proven rig join succeeds" 0 "tailnet join removed" undo

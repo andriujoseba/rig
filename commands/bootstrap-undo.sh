@@ -14,9 +14,10 @@ runner_installed=0
 if [ -n "${RIG_RUNNER_DIR:-}" ]; then
   [ -e "$RIG_RUNNER_DIR/.runner" ] && runner_installed=1
 else
-  # Two levels, because a box may carry multiple externally managed runners:
-  # the legacy single-instance layout puts .runner in actions-runner/ itself,
-  # and named instances put it in actions-runner/<name>/.
+  # Two levels, because a box may carry multiple externally managed runners
+  # (#166): the legacy single-instance layout puts .runner in actions-runner/
+  # itself, and named instances put it in actions-runner/<name>/. A glob that
+  # only knew the first would let undo proceed with other runners registered.
   for runner_config in \
     /home/*/actions-runner/.runner /home/*/actions-runner/*/.runner \
     /root/actions-runner/.runner /root/actions-runner/*/.runner; do

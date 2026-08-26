@@ -262,6 +262,8 @@ Leaves the tailnet and then removes `/etc/rig/role`, but only when the marker
 says `join-by=rig`. A pre-existing join, an old marker with no provenance, or
 no marker at all is refused without calling `tailscale logout`; the refusal
 names the manual repair. Re-running bootstrap writes the current marker shape.
+An installed GitHub runner is also refused so undo cannot leave a ghost
+registration; deregister it outside rig before retrying.
 
 If `tailscale logout` fails, the marker stays in place so the command is
 retryable.
