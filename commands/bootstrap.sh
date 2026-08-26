@@ -4,8 +4,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-# shellcheck source=SCRIPTDIR/lib/runner-config.sh
-. "$HERE/lib/runner-config.sh"   # json_field / json_string_array read the netmap
+# shellcheck source=SCRIPTDIR/lib/netmap-json.sh
+. "$HERE/lib/netmap-json.sh"     # json_field / json_string_array read the netmap
 # shellcheck source=SCRIPTDIR/lib/sshd.sh
 . "$HERE/lib/sshd.sh"            # harden_sshd — shared with hardened tenants
 # shellcheck source=SCRIPTDIR/lib/users-config.sh
@@ -829,8 +829,6 @@ fi
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
 if [ "$ROLE" = "control-plane-server" ]; then
   log "next: rig coolify install --version <pin>"
-elif [ "$ROLE" = "runner-server" ]; then
-  log "next: rig runner install --repo <owner/repo> --version <pin>"
 fi
 # Every box gets operators: humans always enter as themselves and elevate via
 # sudo — a shared root login is unattributable. What differs, per the root-door
