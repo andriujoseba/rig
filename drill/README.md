@@ -86,4 +86,4 @@ file and nothing else.
 
 The instrument's own honesty — the refusals, the skip accounting, the
 capture-and-diff, the emitter — is `test/drill.sh`'s job, and CI runs it
-on every PR. The live four-leg run is a release's job, once per cycle.
+on every PR. The live three-leg run is a release's job, once per cycle.

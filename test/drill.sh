@@ -5,7 +5,7 @@
 # instrument itself: the refusals, the classifications, the capture-and-diff
 # that decides idempotence, and the record emitter — the parts whose lies
 # would be believed, months later, by a reader of drills/<version>.md. The
-# four-leg live run on a real Debian machine is #107's exercise, not this
+# three-leg live run on a real Debian machine is #107's exercise, not this
 # file's: nothing here needs root, Docker, a tailnet or the network.
 #
 # Extraction pattern is test/release.sh's: the functions under test are

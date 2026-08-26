@@ -138,6 +138,8 @@ check "bootstrap: staging-box + removed --ts-tag exits 2" 2 "never join the tail
 # green (repo precedent: the login-path refusal below).
 check "bootstrap: the catch-all tag:server refusal is present" 0 "" \
   grep -q "Only control-plane-server and workload-server are managed by the control plane" "$ROOT/commands/bootstrap.sh"
+check "bootstrap: runner-server keeps its dedicated tag:server refusal" 0 "" \
+  grep -q "role runner-server joined with tag:server" "$ROOT/commands/bootstrap.sh"
 # ...and staging-server must NOT have slipped into the allow-list arm beside
 # control-plane-server|workload-server. A new preset silently landing there
 # would extend every server grant to a VM host, which is the exact shape the
@@ -249,8 +251,9 @@ check "bootstrap: already-joined path defaults to join-by=preexisting" 0 "JOIN_B
 UNDO_FIX="$(mktemp -d)"
 UNDO_BIN="$UNDO_FIX/bin"
 UNDO_MARKER="$UNDO_FIX/role"
+UNDO_RUNNER="$UNDO_FIX/runner"
 UNDO_CALLS="$UNDO_FIX/tailscale.calls"
-mkdir -p "$UNDO_BIN"
+mkdir -p "$UNDO_BIN" "$UNDO_RUNNER"
 cat > "$UNDO_BIN/tailscale" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$UNDO_CALLS"
@@ -263,7 +266,8 @@ SH
 chmod +x "$UNDO_BIN/tailscale" "$UNDO_BIN/id"
 undo() {
   env PATH="$UNDO_BIN:$PATH" UNDO_CALLS="$UNDO_CALLS" \
-    RIG_ROLE_MARKER="$UNDO_MARKER" "$ROOT/bin/rig" bootstrap --undo
+    RIG_ROLE_MARKER="$UNDO_MARKER" RIG_RUNNER_DIR="$UNDO_RUNNER" \
+    "$ROOT/bin/rig" bootstrap --undo
 }
 undo_untouched() {
   : > "$UNDO_CALLS"
@@ -280,6 +284,13 @@ printf '%s\n' 'role=workload-server root-door=open host=no join=authkey join-by=
 check "bootstrap --undo: pre-existing join refuses by name" 1 "join-by=preexisting" undo
 check "bootstrap --undo: pre-existing join leaves tailnet untouched" 0 "" undo_untouched
 printf '%s\n' 'role=runner-server root-door=open host=no join=authkey join-by=rig' > "$UNDO_MARKER"
+printf '%s\n' '{}' > "$UNDO_RUNNER/.runner"
+check "bootstrap --undo: installed runner requires external deregistration" \
+  1 "deregister it outside rig" undo
+check "bootstrap --undo: installed runner leaves tailnet untouched" 0 "" undo_untouched
+check "rig help: bootstrap --undo advertises the installed-runner refusal" \
+  0 "while a GitHub runner is installed" "$ROOT/bin/rig" --help
+rm -f "$UNDO_RUNNER/.runner"
 check "bootstrap --undo: failed logout is loud" \
   1 "role marker kept" env TAILSCALE_LOGOUT_FAIL=1 PATH="$UNDO_BIN:$PATH" \
     UNDO_CALLS="$UNDO_CALLS" RIG_ROLE_MARKER="$UNDO_MARKER" "$ROOT/bin/rig" bootstrap --undo
@@ -1830,7 +1841,7 @@ check "users status: --help exits 0"      0 "usage:"        "$ROOT/commands/user
 
 # --- users file refusal matrix, through the sourced parser -------------------
 # Reaching the parser via the CLI stops at the root check; it is pure and
-# sourceable on purpose (repo precedent: assert_runner_repo, json_string_array),
+# sourceable on purpose (repo precedent: parse_users_file, json_string_array),
 # so the refusals are proven here against fixtures, non-root and network-free.
 parse() { # parse <file> — the users-file parser, exactly as apply runs it
   bash -c 'set -euo pipefail
@@ -2482,7 +2493,7 @@ check "users close-root: the gate consults deny_verdict" 0 "" \
   grep -qE '^[[:space:]]*deny_reason="\$\(deny_verdict ' "$ROOT/commands/users-close-root.sh"
 # Marker-gate refusals through the sourced lib against fixture markers: the CLI
 # path sits behind the root check, so the gate is a pure lib function on
-# purpose (repo precedent: parse_users_file, assert_runner_repo). The command
+# purpose (repo precedent: parse_users_file, json_string_array). The command
 # reads the marker path from RIG_ROLE_MARKER for the same reason — so the gate
 # stays pointable at fixtures.
 marker_gate() { # marker_gate <marker_path>

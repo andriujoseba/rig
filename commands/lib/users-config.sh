@@ -193,8 +193,8 @@ root_door_of() {
 # otherwise print the refusal reason on stdout and return 1 (the caller wraps
 # it in its own die). The policy is a pure lib function on purpose: the CLI
 # path sits behind the root check, so the harness proves every refusal HERE,
-# against fixture markers, non-root (repo precedent: parse_users_file,
-# assert_runner_repo).
+# against fixture markers, non-root (repo precedent: parse_users_file and the
+# netmap JSON readers).
 assert_marker_closes_root() {
   local marker
   marker="$(read_role_marker "$1")"
