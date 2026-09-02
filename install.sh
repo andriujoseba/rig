@@ -33,7 +33,8 @@ set -euo pipefail
 # like RIG_REF (#106): installs from that tree instead of downloading — CI's
 # install-lifecycle job and the test suites use it, so what lands is the code
 # under review. A path that is neither refuses by name, never falls back to
-# a download.
+# a download. RIG_INSTALLED_FROM overrides the local channel's provenance for
+# a self-contained artifact, whose unpacked source directory is temporary.
 
 REPO="${RIG_REPO:-heavy-duty/rig}"
 REF="${RIG_REF:-}"   # empty = the latest release, resolved below
@@ -176,7 +177,10 @@ trap cleanup EXIT
 # --- acquire the tree --------------------------------------------------------
 if [ -n "${RIG_INSTALL_SOURCE:-}" ]; then
   SRC="$RIG_INSTALL_SOURCE"
-  INSTALLED_FROM="local:$SRC"
+  case "${RIG_INSTALLED_FROM:-}" in
+    *$'\n'*) die "RIG_INSTALLED_FROM must be one line" ;;
+  esac
+  INSTALLED_FROM="${RIG_INSTALLED_FROM:-local:$SRC}"
   if [ -d "$SRC" ]; then
     log "copying local tree $SRC"
     mkdir -p "$TMPDIR/tree"
@@ -263,6 +267,10 @@ snapshot_templates() {
   fi
   repo="${RIG_TEMPLATES_REPO:-heavy-duty/rig-templates}"
   snapshot="$tree/templates@$pin"
+  if [ -n "$(find "$snapshot" -mindepth 2 -maxdepth 2 -type f -name template.env -print -quit 2>/dev/null)" ]; then
+    log "template registry snapshot already present: $repo@$pin"
+    return 0
+  fi
   if ! command -v curl >/dev/null 2>&1; then
     warn "curl is unavailable; template registry snapshot $repo@$pin was not installed (converge will retry the live fetch)."
     return 0
