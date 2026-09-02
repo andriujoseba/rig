@@ -9,7 +9,7 @@
 #
 #   TS_AUTHKEY=tskey-... bash <(curl -fsSL \
 #     https://raw.githubusercontent.com/heavy-duty/rig/release/0.4.0/drill/drill.sh) \
-#     --rig-repo heavy-duty/rig --rig-ref release/0.4.0 --box-ref 0.9.0 \
+#     --rig-repo heavy-duty/rig --rig-ref release/0.4.0 --box-ref 0.10.0 \
 #     --users-from-github danmt --run-id drill-2026-07-24-a --yes
 #   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
 # rig's drill asserts CONVERGENCE — a machine reaches its role, idempotently.
@@ -75,7 +75,7 @@ drill/drill.sh — rig's release drill: the instrument behind drills/README.md.
 
   TS_AUTHKEY=tskey-... bash <(curl -fsSL \
     https://raw.githubusercontent.com/heavy-duty/rig/release/0.4.0/drill/drill.sh) \
-    --rig-repo heavy-duty/rig --rig-ref release/0.4.0 --box-ref 0.9.0 \
+    --rig-repo heavy-duty/rig --rig-ref release/0.4.0 --box-ref 0.10.0 \
     --users-from-github danmt --run-id drill-2026-07-24-a --yes
   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
 

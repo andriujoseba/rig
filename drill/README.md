@@ -14,22 +14,22 @@ release (#105, and #107's debt).
   Incus host. One known-good substrate is a fresh box VM:
 
   ```sh
-  box new drill-rig --template blank --vm --cpu 4 --memory 8GiB --disk 60GiB
+  box new --name drill-rig --vm --cpu 4 --memory 8GiB --disk 60GiB
   ```
 
-  Use the `blank` template. Do not use `staging-box`: that template runs rig
-  at mint through `BOX_BOOTSTRAP_ROLE`, so the guest is already converged and
-  is not a scratch machine. box `0.9.0` or newer carries the nested-network
-  subnet selection needed for `box doctor` to pass in a box VM. The drill
+  Do not use `staging-box`: it is a VM-only, autostarting server seed rather
+  than a disposable scratch mint. The untemplated box uses the
+  nested-network subnet selection needed for `box doctor` to pass in a box
+  VM. The drill
   hardens sshd, renames the machine, joins it to a tailnet, and installs
   box/Incus and Docker. The machine is its own reset; there is no teardown.
 - **The pinned candidate refs, both of them.** `--rig-ref` and
   `--box-ref` are required; the harness refuses to run without them and
   refuses to continue if what installed disagrees with what was asked
   (`INSTALLED_FROM`, both trees). Since heavy-duty/rig#103 landed, both
-  installers have sane defaults when unpinned — box installs the
-  `BOX_RELEASE` pin (currently `0.9.0`), rig's `install.sh` resolves the
-  latest release — and a sane default is exactly why the drill will not
+  installers have sane defaults when unpinned — box installs the candidate
+  rig tree's `BOX_RELEASE` pin, rig's `install.sh` resolves the latest
+  release — and a sane default is exactly why the drill will not
   let a ref go unstated: an unpinned run silently drills a shipping pair
   that is not the candidate, and the record it leaves looks clean.
 - **A branch or tag GitHub can serve.** `--rig-ref refs/pull/N/head` is not
@@ -63,7 +63,7 @@ RIG_REPO=heavy-duty/rig
 RIG_REF=release/0.4.0
 TS_AUTHKEY=tskey-... bash <(curl -fsSL \
   "https://raw.githubusercontent.com/$RIG_REPO/$RIG_REF/drill/drill.sh") \
-  --rig-repo "$RIG_REPO" --rig-ref "$RIG_REF" --box-ref 0.9.0 \
+  --rig-repo "$RIG_REPO" --rig-ref "$RIG_REF" --box-ref 0.10.0 \
   --users-from-github danmt --run-id drill-2026-08-26-a --yes
 ```
 
