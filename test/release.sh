@@ -199,6 +199,172 @@ check "channel local: the refusal installed NOTHING" 1 "" test -e "$H8"
 check "channel local: ...and downloaded nothing (no silent fallback)" 1 "" \
   test -s "$LOG8"
 
+H9="$WORK/h9"; B9="$WORK/b9"; LOG9="$WORK/log9"
+check "channel local: an artifact may override the temporary source provenance" 0 "done" \
+  rinst "$H9" "$B9" RIG_INSTALL_SOURCE="$TBDIR/rig-7.7.7-relflow" \
+    RIG_INSTALLED_FROM="artifact:rig-7.7.7-relflow.sh sha256:abc123" CURL_STUB_LOG="$LOG9"
+check "channel local: the override is recorded exactly" 0 \
+  "artifact:rig-7.7.7-relflow.sh sha256:abc123" \
+  cat "$H9/versions/7.7.7-relflow/INSTALLED_FROM"
+H10="$WORK/h10"; B10="$WORK/b10"
+check "channel local: a multiline provenance value is refused" 1 \
+  "RIG_INSTALLED_FROM must be one line" \
+  rinst "$H10" "$B10" RIG_INSTALL_SOURCE="$TBDIR/rig-7.7.7-relflow" \
+    "RIG_INSTALLED_FROM=artifact:one
+forged:two"
+check "channel local: the multiline refusal installs nothing" 1 "" test -e "$H10"
+
+# --- generic self-installer builder (#219) ----------------------------------
+# Drive the copied builder with a non-rig product. Product-specific source or
+# provenance variables cannot hide behind this repository's own happy path.
+MAKE_INSTALLER="$ROOT/dist/make-installer.sh"
+ARTWORK="$WORK/generic-artifact"
+ARTTREE="$ARTWORK/widget-tree"
+ARTIFACT="$ARTWORK/widget-1.2.3.sh"
+ARTLOG="$ARTWORK/installed"
+mkdir -p "$ARTTREE"
+printf '1.2.3\n' > "$ARTTREE/VERSION"
+cat > "$ARTTREE/install-widget.sh" <<'WIDGET'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${WIDGET_INSTALL_SOURCE:?}"
+: "${WIDGET_INSTALLED_FROM:?}"
+printf 'source=%s\nprovenance=%s\n' \
+  "$WIDGET_INSTALL_SOURCE" "$WIDGET_INSTALLED_FROM" > "$WIDGET_OUTPUT"
+WIDGET
+chmod +x "$ARTTREE/install-widget.sh"
+
+check "self-installer: builder is valid bash" 0 "" bash -n "$MAKE_INSTALLER"
+for product_arg in --name --version --root --out --entrypoint --srcvar; do
+  check "self-installer: help names $product_arg" 0 "$product_arg" \
+    "$MAKE_INSTALLER" --help
+done
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "self-installer: help carries no rig-specific product fact" 1 "" \
+  bash -c '"$1" --help | grep -qi rig' _ "$MAKE_INSTALLER"
+check "self-installer: builds a differently named throwaway tree" 0 \
+  "make-installer: wrote $ARTIFACT" \
+  "$MAKE_INSTALLER" --name widget --version 1.2.3 --root "$ARTTREE" \
+  --out "$ARTIFACT" --entrypoint install-widget.sh
+check "self-installer: generated artifact is executable" 0 "" test -x "$ARTIFACT"
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "self-installer: widget stub carries no rig string" 1 "" \
+  bash -c 'sed "/^__SELF_INSTALLER_PAYLOAD__$/q" "$1" | grep -qi rig' _ "$ARTIFACT"
+check "self-installer: --version identifies without installing" 0 "widget 1.2.3" \
+  env WIDGET_OUTPUT="$ARTLOG" bash "$ARTIFACT" --version
+check "self-installer: --version touches no install output" 1 "" test -e "$ARTLOG"
+check "self-installer: --check verifies without installing" 0 "payload intact" \
+  env WIDGET_OUTPUT="$ARTLOG" bash "$ARTIFACT" --check
+check "self-installer: --check touches no install output" 1 "" test -e "$ARTLOG"
+check "self-installer: artifact installs the throwaway tree" 0 "installing widget 1.2.3" \
+  env WIDGET_OUTPUT="$ARTLOG" bash "$ARTIFACT"
+check "self-installer: source variable is derived from product name" 0 "source=" \
+  grep -F 'source=' "$ARTLOG"
+check "self-installer: provenance variable is derived from product name" 0 \
+  "provenance=artifact:widget-1.2.3.sh sha256:" \
+  grep -F 'provenance=artifact:widget-1.2.3.sh sha256:' "$ARTLOG"
+
+ARTSIZE="$(wc -c < "$ARTIFACT" | tr -d ' ')"
+TRUNCATED="$ARTWORK/widget-truncated.sh"
+head -c "$((ARTSIZE - 1))" "$ARTIFACT" > "$TRUNCATED"
+chmod +x "$TRUNCATED"
+rm -f "$ARTLOG"
+ARTTMP="$ARTWORK/exec-tmp"
+mkdir -p "$ARTTMP"
+check "self-installer: truncated payload is refused by --check" 1 \
+  "payload checksum MISMATCH" env TMPDIR="$ARTTMP" WIDGET_OUTPUT="$ARTLOG" \
+  bash "$TRUNCATED" --check
+check "self-installer: truncated install is refused before unpacking" 1 \
+  "payload checksum MISMATCH" env TMPDIR="$ARTTMP" WIDGET_OUTPUT="$ARTLOG" \
+  bash "$TRUNCATED"
+check "self-installer: refusal runs no entrypoint" 1 "" test -e "$ARTLOG"
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "self-installer: refusal unpacks nothing" 1 "" \
+  bash -c 'find "$1" -mindepth 1 -print -quit | grep -q .' _ "$ARTTMP"
+
+# --- rig release artifact (#219) --------------------------------------------
+PIN="$(sed -n 's/^RIG_TEMPLATES_PIN=//p' "$ROOT/commands/lib/templates.sh")"
+REGISTRY_STAGE="$WORK/registry-stage/rig-templates-$PIN/test-box"
+REGISTRY_TARBALL="$WORK/registry.tar.gz"
+mkdir -p "$REGISTRY_STAGE"
+printf 'USER="artifact-test"\n' > "$REGISTRY_STAGE/template.env"
+tar -czf "$REGISTRY_TARBALL" -C "$WORK/registry-stage" "rig-templates-$PIN"
+
+REL_ASSETS="$WORK/release-assets"
+mkdir -p "$REL_ASSETS"
+check "release artifact: builds rig installer and sidecar with stubbed registry fetch" 0 \
+  "release-artifact: wrote" \
+  env PATH="$STUB:$PATH" CURL_STUB_OK="$PIN" CURL_STUB_TARBALL="$REGISTRY_TARBALL" \
+  "$ROOT/dist/release-artifact.sh" --version 0.0.0-test --assets-dir "$REL_ASSETS"
+RIG_ARTIFACT="$REL_ASSETS/rig-0.0.0-test.sh"
+check "release artifact: installer exists and is executable" 0 "" test -x "$RIG_ARTIFACT"
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "release artifact: sidecar verifies" 0 "rig-0.0.0-test.sh: OK" \
+  bash -c 'cd "$1" && sha256sum -c rig-0.0.0-test.sh.sha256' _ "$REL_ASSETS"
+CHECK_DEST="$WORK/check-only-dest"
+check "release artifact: --check verifies without installing" 0 "payload intact" \
+  env RIG_HOME="$CHECK_DEST" bash "$RIG_ARTIFACT" --check
+check "release artifact: --check leaves no install root" 1 "" test -e "$CHECK_DEST"
+check "release artifact: --version identifies without installing" 0 "rig 0.0.0-test" \
+  env RIG_HOME="$CHECK_DEST" bash "$RIG_ARTIFACT" --version
+check "release artifact: --version still leaves no install root" 1 "" test -e "$CHECK_DEST"
+
+ART_HOME="$WORK/artifact-home"; ART_BIN="$WORK/artifact-bin"; ART_CURL="$WORK/artifact-curl.log"
+artifact_install() {
+  env PATH="$STUB:$PATH" HOME="$FAKEHOME" RIG_HOME="$ART_HOME" RIG_BIN="$ART_BIN" \
+    RIG_ROLE_MARKER="$WORK/no-marker" CURL_STUB_LOG="$ART_CURL" \
+    bash "$RIG_ARTIFACT" > "$WORK/artifact-install.log" 2>&1
+}
+check "release artifact: installs with no destination-time network" 0 "" artifact_install
+INSTALLED_VER="$(cat "$ROOT/VERSION")"
+check "release artifact: carries the pinned template registry" 0 "" \
+  test -f "$ART_HOME/versions/$INSTALLED_VER/templates@$PIN/test-box/template.env"
+check "release artifact: install consulted no curl" 1 "" test -s "$ART_CURL"
+check "release artifact: install emitted no snapshot-download warning" 1 "" \
+  grep -qF "snapshot skipped" "$WORK/artifact-install.log"
+PAYLOAD_SHA="$(bash "$RIG_ARTIFACT" --version | sed -n 's/^payload sha256: //p')"
+check "release artifact: durable provenance replaces the temp path" 0 \
+  "artifact:rig-0.0.0-test.sh sha256:$PAYLOAD_SHA" \
+  cat "$ART_HOME/versions/$INSTALLED_VER/INSTALLED_FROM"
+check "release artifact: installed tree names the clean source commit" 0 \
+  "$(git -C "$ROOT" rev-parse HEAD)" \
+  cat "$ART_HOME/versions/$INSTALLED_VER/SOURCE_COMMIT"
+
+# Build from a disposable dirty Git work tree so this suite never mutates the
+# checkout it is running from. The payload remains HEAD, while the stamp names
+# that the requested source work tree was dirty.
+DIRTY_ROOT="$WORK/dirty-root"
+mkdir -p "$DIRTY_ROOT"
+git -C "$ROOT" archive HEAD | tar -xf - -C "$DIRTY_ROOT"
+git -C "$DIRTY_ROOT" init -q
+git -C "$DIRTY_ROOT" config user.name artifact-test
+git -C "$DIRTY_ROOT" config user.email artifact-test@example.invalid
+git -C "$DIRTY_ROOT" add .
+git -C "$DIRTY_ROOT" commit -qm fixture
+DIRTY_SHA="$(git -C "$DIRTY_ROOT" rev-parse HEAD)"
+touch "$DIRTY_ROOT/uncommitted-probe"
+DIRTY_ASSETS="$WORK/dirty-assets"; mkdir -p "$DIRTY_ASSETS"
+check "release artifact: builds from a dirty work tree" 0 "release-artifact: wrote" \
+  env PATH="$STUB:$PATH" CURL_STUB_OK="$PIN" CURL_STUB_TARBALL="$REGISTRY_TARBALL" \
+  "$DIRTY_ROOT/dist/release-artifact.sh" --version dirty-test \
+  --root "$DIRTY_ROOT" --assets-dir "$DIRTY_ASSETS"
+DIRTY_HOME="$WORK/dirty-home"; DIRTY_BIN="$WORK/dirty-bin"
+check "release artifact: dirty artifact installs" 0 "done" \
+  env PATH="$STUB:$PATH" HOME="$FAKEHOME" RIG_HOME="$DIRTY_HOME" RIG_BIN="$DIRTY_BIN" \
+  RIG_ROLE_MARKER="$WORK/no-marker" bash "$DIRTY_ASSETS/rig-dirty-test.sh"
+check "release artifact: installed tree stamps the source as dirty" 0 "$DIRTY_SHA-dirty" \
+  cat "$DIRTY_HOME/versions/$INSTALLED_VER/SOURCE_COMMIT"
+
+# A registry fetch failure must leave no plausible-but-incomplete release asset.
+FAIL_ASSETS="$WORK/fail-assets"; mkdir -p "$FAIL_ASSETS"
+check "release artifact: registry fetch failure is loud" 1 \
+  "could not fetch template registry snapshot" \
+  env PATH="$STUB:$PATH" CURL_STUB_FAIL=1 \
+  "$ROOT/dist/release-artifact.sh" --version fail-test --assets-dir "$FAIL_ASSETS"
+# shellcheck disable=SC2016  # $1 expands in the inner bash, by design
+check "release artifact: failed build publishes nothing" 1 "" \
+  bash -c 'find "$1" -mindepth 1 -print -quit | grep -q .' _ "$FAIL_ASSETS"
+
 rm -rf "$WORK"
 
 echo "---"
