@@ -51,13 +51,14 @@ mkdir -p "$work/tree" "$work/assets" "$work/templates-unpack"
 # other job state. When --root is a Git work tree, HEAD is the release payload;
 # never pack the mutable workspace around it. The stamp still says when that
 # workspace was dirty, because a hand-built drill artifact must be honest about
-# the checkout state from which it was requested.
+# the checkout state from which it was requested. Ceremony's own untracked
+# checkout is release machinery rather than product dirtiness and is excluded.
 source_commit=unknown
 if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   top="$(git -C "$root" rev-parse --show-toplevel)"
   [ "$(cd "$top" && pwd)" = "$root" ] || die "--root must name the Git work-tree root"
   source_commit="$(git -C "$root" rev-parse HEAD)"
-  if [ -n "$(git -C "$root" status --porcelain --untracked-files=normal)" ]; then
+  if [ -n "$(git -C "$root" status --porcelain --untracked-files=normal -- . ':(exclude).ceremony-src')" ]; then
     source_commit="$source_commit-dirty"
   fi
   git -C "$root" archive --format=tar HEAD | tar -xf - -C "$work/tree"

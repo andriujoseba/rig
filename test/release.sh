@@ -342,6 +342,20 @@ git -C "$DIRTY_ROOT" config user.email artifact-test@example.invalid
 git -C "$DIRTY_ROOT" add .
 git -C "$DIRTY_ROOT" commit -qm fixture
 DIRTY_SHA="$(git -C "$DIRTY_ROOT" rev-parse HEAD)"
+mkdir -p "$DIRTY_ROOT/.ceremony-src"
+touch "$DIRTY_ROOT/.ceremony-src/release-job-state"
+CEREMONY_ASSETS="$WORK/ceremony-assets"; mkdir -p "$CEREMONY_ASSETS"
+check "release artifact: ceremony's checkout is not product dirtiness" 0 \
+  "release-artifact: wrote" \
+  env PATH="$STUB:$PATH" CURL_STUB_OK="$PIN" CURL_STUB_TARBALL="$REGISTRY_TARBALL" \
+  "$DIRTY_ROOT/dist/release-artifact.sh" --version ceremony-test \
+  --root "$DIRTY_ROOT" --assets-dir "$CEREMONY_ASSETS"
+CEREMONY_HOME="$WORK/ceremony-home"; CEREMONY_BIN="$WORK/ceremony-bin"
+check "release artifact: ceremony-checkout artifact installs" 0 "done" \
+  env PATH="$STUB:$PATH" HOME="$FAKEHOME" RIG_HOME="$CEREMONY_HOME" RIG_BIN="$CEREMONY_BIN" \
+  RIG_ROLE_MARKER="$WORK/no-marker" bash "$CEREMONY_ASSETS/rig-ceremony-test.sh"
+check "release artifact: ceremony-checkout artifact keeps a clean source stamp" 0 "$DIRTY_SHA" \
+  cat "$CEREMONY_HOME/versions/$INSTALLED_VER/SOURCE_COMMIT"
 touch "$DIRTY_ROOT/uncommitted-probe"
 DIRTY_ASSETS="$WORK/dirty-assets"; mkdir -p "$DIRTY_ASSETS"
 check "release artifact: builds from a dirty work tree" 0 "release-artifact: wrote" \
