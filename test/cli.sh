@@ -2952,7 +2952,7 @@ check "install: failed snapshot fetch leaves no hollow snapshot" 1 "" \
   test -e "$HFAIL/versions/$VER/templates@$TPL_PIN"
 
 # --- rig#39: no $HOME in the environment (cloud-init's runcmd) ---------------
-# The box#88 seed runs install.sh from runcmd, which carries NO $HOME; under
+# The former box#88 seed ran install.sh from runcmd, which carried NO $HOME; under
 # set -u the first $HOME expansion was a death instead of an install. The
 # installer now derives a home from getent — driven here with a shim getent
 # so the derived home is a throwaway root, and proven fatal-BY-NAME when

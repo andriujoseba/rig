@@ -441,10 +441,11 @@ rig bootstrap staging-box         # the server tenant (docker + sshd hardening)
 rig bootstrap claude-box --user dev   # when the seed's BOX_USER differs
 ```
 
-**The layering** (rig#31 ↔ box#81): a box template stops being where tenant
-content lives. box mints a **thin, creds-free seed** — base image, the
-`BOX_USER`, rig (+ tmux) preinstalled, and nothing that joins or admits — and
-everything the guest *becomes* is a rig tenant role. cloud-init is a first-boot
+**The layering** (rig#31, originating with box#81): a box template stops being
+where tenant content lives. box mints a **thin, creds-free seed** — base image,
+the `BOX_USER`, fixed `/tmp` and swap, `tmux`, `curl`, `ca-certificates`,
+`chrony`, `python3-venv` and `shellcheck` — and everything the guest *becomes*
+is a rig tenant role. cloud-init is a first-boot
 one-shot: not convergent, not re-runnable, and only parse-and-grep testable.
 rig roles are idempotent scripts with effective-state asserts, driven by the
 same harness as everything else — and re-runnable on an *existing* box to
@@ -541,16 +542,17 @@ tenants outright, and *any* tenant refuses a `host=yes` box — a VM host is
 the opposite of a guest, and a pre-#31 staging *host* re-running its old
 command is exactly who that refusal catches (it names the new spelling).
 
-> **The rig install in the seed is unpinned — same honesty as the box note
-> above.** The seed preinstalls rig via its curl installer, which resolves
-> `RIG_REPO`/`RIG_REF` — and since rig#32 the installer defaults to the
+> **The rig install a guest receives is unpinned.** A human runs rig's curl
+> installer from a root shell inside the guest; that installer resolves
+> `RIG_REPO`/`RIG_REF` and, since rig#32, defaults to the
 > **latest release**, with `RIG_REF=<tag>` the pin and `RIG_REF=main` the
-> dev channel. A seed that needs main must set `RIG_REF=main` explicitly;
+> dev channel. An install that needs main must set `RIG_REF=main` explicitly;
 > the default channel never silently falls back to a development branch.
-> That inverts the install edge on this page:
-> rig installs box on VM-hosting machines, and box guests now install rig.
-> `RIG_REPO`/`RIG_REF` are the pin points, or point them at a frozen branch
-> of your own fork. The seed side of this edge is box#81's to document.
+> The install edge points both ways: rig installs box on VM-hosting machines
+> at `BOX_RELEASE`, and an operator installs rig in a guest. `RIG_REPO` and
+> `RIG_REF` are that operator's pin points, or can point at a frozen branch
+> of a fork. box#81 established the old automatic edge; [box 0.10.0 documents
+> its retirement](https://github.com/heavy-duty/box/blob/0.10.0/README.md#sizes-and-seeds).
 
 ### The identity model
 

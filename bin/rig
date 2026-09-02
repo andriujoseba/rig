@@ -49,8 +49,8 @@ commands:
       as staging-box lands box#69's server posture instead — docker + sshd
       hardening; its tailnet join stays operator-run via 'rig bootstrap
       workload-server'.
-      Creds-free and non-interactive: box auto-runs these at mint. Run as
-      root, inside the box.
+      Creds-free and non-interactive: a human runs these from a root shell
+      inside the box ('box root <box>').
   db <dump|restore> ...
       Ad-hoc PostgreSQL dump/restore for a container on this box. `dump`
       writes a gzipped SQL artifact (--no-owner --no-acl, so it restores

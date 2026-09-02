@@ -24,17 +24,17 @@
 #                        offline-test path, and "try a template before it
 #                        exists anywhere")
 #   RIG_TEMPLATES_REF    a ref in the registry repo, fetched as a tarball at
-#                        bootstrap time (the same shape as the rig preinstall)
+#                        bootstrap time (the same shape as the operator's rig install)
 #   RIG_TEMPLATES_REPO   which repo that ref lives in (default
 #                        heavy-duty/rig-templates)
 # and, absent both overrides, the snapshot installed beside this file when it
 # matches the PIN below, then a live fetch of that pin as the fallback.
 
-# The default registry ref a mint converges — the BOX_RELEASE discipline
+# The default registry ref a tenant converge uses — the BOX_RELEASE discipline
 # (#103): one line, bumped deliberately by ordinary rig PR after review, so a
 # rig release freezes the mechanism+registry pair and a newer rig matches
 # newer templates by default (ruled 2026-07-24 on #110: pinned, not
-# main-tracked). RIG_TEMPLATES_REF overrides it per mint.
+# main-tracked). RIG_TEMPLATES_REF overrides it per converge.
 #
 # The commit below is the registry's own release **0.1.0** — published
 # 2026-08-20, https://github.com/heavy-duty/rig-templates/releases/tag/0.1.0 —

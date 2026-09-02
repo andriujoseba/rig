@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # rig bootstrap <role>-box — the box TENANT roles ('-box' names the family: a
 # guest, vs the '-server' machine roles): what a box-minted guest becomes
-# (issue #31). box mints the thin, creds-free seed (base image, user, rig
-# preinstalled — heavy-duty/box#81); rig converges the tenant content that
-# used to live in the templates' cloud-init, idempotent and effective-state
-# asserted, so an EXISTING box can be re-run to a new spec instead of
-# re-minted.
+# (issue #31). box mints a blank, creds-free guest (base image, user, thin
+# toolchain); a human installs rig and runs the converge as root. This layering
+# originated with heavy-duty/box#81. rig converges the tenant content that used
+# to live in the templates' cloud-init, idempotent and effective-state asserted,
+# so an EXISTING box can be re-run to a new spec instead of re-minted.
 #
 # One MECHANISM, parameterized per tenant by a fetched DEFINITION (#110): the
 # agent-tenant registry lives in heavy-duty/rig-templates — one directory per
@@ -43,9 +43,9 @@ usage() {
   cat <<'EOF'
 usage: rig bootstrap <role>-box [--user <name>]
 
-Box TENANT roles — what a box-minted guest becomes. box mints the thin,
-creds-free seed (base image, user, rig preinstalled); this converges the
-tenant on top, and re-runs converge an existing box to a new spec.
+Box TENANT roles — what a box-minted guest becomes. box mints a blank,
+creds-free guest; a human installs rig and runs this as root from inside it.
+Re-runs converge that existing box to a new spec.
 
   <role>-box          a tenant DEFINED IN THE REGISTRY
                       (heavy-duty/rig-templates) — claude-box, codex-box,
