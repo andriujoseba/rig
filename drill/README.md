@@ -18,11 +18,12 @@ release (#105, and #107's debt).
   ```
 
   Do not use `staging-box`: it is a VM-only, autostarting server seed rather
-  than a disposable scratch mint. The untemplated box uses the
-  nested-network subnet selection needed for `box doctor` to pass in a box
-  VM. The drill
-  hardens sshd, renames the machine, joins it to a tailnet, and installs
-  box/Incus and Docker. The machine is its own reset; there is no teardown.
+  than a disposable scratch mint. The box the drill installs carries the
+  nested-network subnet selection `box doctor` needs inside a box VM
+  (box#80); `--box-ref` selects it, defaulting to the candidate tree's
+  `BOX_RELEASE` pin. The drill hardens sshd, renames the machine, joins it to
+  a tailnet, and installs box/Incus and Docker. The machine is its own reset;
+  there is no teardown.
 - **The pinned candidate refs, both of them.** `--rig-ref` and
   `--box-ref` are required; the harness refuses to run without them and
   refuses to continue if what installed disagrees with what was asked
